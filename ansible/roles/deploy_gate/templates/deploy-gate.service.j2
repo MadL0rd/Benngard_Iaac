@@ -1,0 +1,35 @@
+[Unit]
+Description=deploy-gate — CI/CD orchestrator with Telegram approval
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User={{ deploy_gate_user }}
+Group={{ deploy_gate_user }}
+EnvironmentFile={{ deploy_gate_etc_dir }}/deploy-gate.env
+ExecStart={{ deploy_gate_binary }} \
+    -config {{ deploy_gate_etc_dir }}/config.json \
+    -ssh-config {{ deploy_gate_etc_dir }}/ssh-config
+Restart=on-failure
+RestartSec=5
+
+# stdout/stderr → journald → promtail → Loki. SyslogIdentifier=deploy-gate
+# so the same Loki LogQL alert that watched `webhook` events now watches
+# `deploy-gate` events. The event= log format inside the message stays
+# identical to the legacy shell wrappers.
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=deploy-gate
+
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+# deploy-gate reads config + secrets + ssh material from a single dir.
+# /usr/bin is needed for the system `ssh` binary the executor shells out to.
+ReadOnlyPaths={{ deploy_gate_etc_dir }} /usr/bin
+
+[Install]
+WantedBy=multi-user.target

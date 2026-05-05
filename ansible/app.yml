@@ -1,0 +1,18 @@
+---
+# App deploy infra: backend (.env, compose, deploy.sh) and frontend
+# (deploy.sh) on app servers. CI chain: tag push → GH Actions → webhook on
+# metrics → SSH here → run deploy.sh. This playbook never starts the app
+# container itself — it only lays out artefacts and does docker login.
+#
+# Run:
+#   make deploy-app                            # all app servers
+#   make deploy-app ANSIBLE_OPTS='--limit dev_app'
+#   make deploy-app-env                        # sync .env only
+
+- name: Backend + frontend deploy infra (dev + prod)
+  hosts: app_servers
+  remote_user: madlord
+  become: true
+  roles:
+    - backend
+    - frontend

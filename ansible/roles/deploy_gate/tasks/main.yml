@@ -1,0 +1,167 @@
+---
+# deploy-gate orchestrator on metrics — native systemd service.
+#
+# Chain: GH Actions → POST https://metrics.benngard.de/deploy-gate/hooks/<id>
+# (HMAC SHA256) → host nginx → 127.0.0.1:9000 (deploy-gate.service) →
+# pending approval in TG → SSH to dev/prod over private network as
+# deploy-agent. See ../../../deploy-gate/README.md for the full flow.
+#
+# Service logs: journald → promtail → Loki → Grafana. The legacy
+# `event=ok|FAILED` log format is preserved so the existing Loki alert
+# rule keeps working unchanged.
+
+# --- One-shot cleanup of the old adnanh/webhook service ---
+#
+# Idempotent: stat-gated so a fresh provision on a host where
+# webhook.service never existed does not run any of these.
+
+- name: Stat old webhook.service
+  ansible.builtin.stat:
+    path: /etc/systemd/system/webhook.service
+  register: deploy_gate_old_unit
+
+- name: Stop+disable old webhook.service
+  ansible.builtin.systemd:
+    name: webhook
+    state: stopped
+    enabled: false
+  when: deploy_gate_old_unit.stat.exists
+
+- name: Remove old webhook.service unit
+  ansible.builtin.file:
+    path: /etc/systemd/system/webhook.service
+    state: absent
+  when: deploy_gate_old_unit.stat.exists
+  notify: Reload systemd
+
+- name: Remove old adnanh/webhook binary
+  ansible.builtin.file:
+    path: /usr/local/bin/webhook
+    state: absent
+
+- name: Remove old /opt/webhook tree
+  ansible.builtin.file:
+    path: /opt/webhook
+    state: absent
+
+# --- deploy-gate user + dirs ---
+
+- name: Create deploy-gate user (no shell, no sudo)
+  ansible.builtin.user:
+    name: "{{ deploy_gate_user }}"
+    system: true
+    shell: /sbin/nologin
+    home: "{{ deploy_gate_etc_dir }}"
+    create_home: false
+    state: present
+
+- name: Create deploy-gate etc directory
+  ansible.builtin.file:
+    path: "{{ deploy_gate_etc_dir }}"
+    state: directory
+    owner: root
+    group: "{{ deploy_gate_user }}"
+    mode: "0750"
+
+# Binary is cross-compiled locally via `make build-deploy-gate` (which
+# `make provision` invokes automatically). copy detects byte-identity →
+# no-op when nothing changed. See deploy-gate/README.md for promotion
+# path to CI-built artifacts when contributors grow > 1.
+
+- name: Install deploy-gate binary
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../deploy-gate/dist/deploy-gate"
+    dest: "{{ deploy_gate_binary }}"
+    owner: root
+    group: root
+    mode: "0755"
+  notify: Restart deploy-gate
+
+# --- SSH material (unchanged from the old role) ---
+
+- name: Install deploy-agent SSH privkey on metrics
+  ansible.builtin.copy:
+    content: "{{ lookup('file', deploy_agent_ssh_private_key) }}\n"
+    dest: "{{ deploy_gate_etc_dir }}/id_ed25519"
+    owner: "{{ deploy_gate_user }}"
+    group: "{{ deploy_gate_user }}"
+    mode: "0600"
+  no_log: true
+
+- name: Gather known_hosts for dev/prod (private IPs)
+  ansible.builtin.command: >
+    ssh-keyscan -t ed25519,ecdsa,rsa -T 5
+    {{ hostvars['dev']['private_ip'] }} {{ hostvars['prod']['private_ip'] }}
+  register: deploy_gate_known_hosts
+  changed_when: false
+
+- name: Write known_hosts
+  ansible.builtin.copy:
+    content: "{{ deploy_gate_known_hosts.stdout_lines | sort | join('\n') }}\n"
+    dest: "{{ deploy_gate_etc_dir }}/known_hosts"
+    owner: "{{ deploy_gate_user }}"
+    group: "{{ deploy_gate_user }}"
+    mode: "0644"
+
+- name: Render ssh-config
+  ansible.builtin.template:
+    src: ssh-config.j2
+    dest: "{{ deploy_gate_etc_dir }}/ssh-config"
+    owner: "{{ deploy_gate_user }}"
+    group: "{{ deploy_gate_user }}"
+    mode: "0644"
+
+# --- deploy-gate runtime config + secrets ---
+#
+# config.json is non-sensitive (paths, regex, labels). deploy-gate.env
+# holds secrets: GH HMAC, TG bot token, TG chat/thread, callback path
+# secret, approver IDs. Mode 0640 + group=deploy-gate.
+
+- name: Render deploy-gate config.json
+  ansible.builtin.template:
+    src: config.json.j2
+    dest: "{{ deploy_gate_etc_dir }}/config.json"
+    owner: root
+    group: "{{ deploy_gate_user }}"
+    mode: "0640"
+  notify: Restart deploy-gate
+
+- name: Render deploy-gate.env (secrets)
+  ansible.builtin.template:
+    src: deploy-gate.env.j2
+    dest: "{{ deploy_gate_etc_dir }}/deploy-gate.env"
+    owner: root
+    group: "{{ deploy_gate_user }}"
+    mode: "0640"
+  no_log: true
+  notify: Restart deploy-gate
+
+- name: Render systemd unit deploy-gate.service
+  ansible.builtin.template:
+    src: deploy-gate.service.j2
+    dest: /etc/systemd/system/deploy-gate.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify:
+    - Reload systemd
+    - Restart deploy-gate
+
+- name: Enable and start deploy-gate.service
+  ansible.builtin.systemd:
+    name: deploy-gate
+    state: started
+    enabled: true
+    daemon_reload: true
+
+# Flush so the healthcheck below sees the latest binary/config. The
+# binary itself does setWebhook against Telegram on startup with an
+# ephemeral path-secret — no Ansible-side TG call needed.
+- name: Flush pending deploy-gate restart
+  ansible.builtin.meta: flush_handlers
+
+- name: Verify deploy-gate is listening on 127.0.0.1:{{ deploy_gate_port }}
+  ansible.builtin.wait_for:
+    host: 127.0.0.1
+    port: "{{ deploy_gate_port }}"
+    timeout: 10

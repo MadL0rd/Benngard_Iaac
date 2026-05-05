@@ -1,0 +1,4 @@
+---
+profile: production
+warn_list:
+  - syntax-check[unknown-module]

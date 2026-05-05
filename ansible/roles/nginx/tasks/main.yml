@@ -1,0 +1,97 @@
+---
+- name: Install nginx
+  ansible.builtin.dnf:
+    name: nginx
+    state: present
+
+- name: Start and enable nginx
+  ansible.builtin.systemd:
+    name: nginx
+    state: started
+    enabled: true
+
+- name: Create ACME challenge directory (certbot webroot)
+  ansible.builtin.file:
+    path: /var/www/html/.well-known/acme-challenge
+    state: directory
+    owner: nginx
+    group: nginx
+    mode: "0755"
+
+# kind=app vhosts serve SPA static files from {{ frontend_static_dir }} —
+# one shared path, domain-independent. Frontend deploy.sh (as deploy-agent)
+# does `rsync -a --delete` here; -a preserves source owner/group/mode so
+# group drifts to deploy-agent every deploy. We don't enforce group to
+# avoid `changed` on every provision — nginx reads via mode 0755.
+- name: Create frontend static_root
+  ansible.builtin.file:
+    path: "{{ frontend_static_dir }}"
+    state: directory
+    owner: deploy-agent
+    mode: "0755"
+  when: nginx_vhosts | selectattr('kind', 'equalto', 'app') | list | length > 0
+
+# /var/www doesn't exist in a clean RHEL-family cloud-image. When Ansible
+# creates directories here they inherit `var_t` from /var. The default
+# SELinux policy for /var/www(/.*)? is `httpd_sys_content_t`, but it only
+# applies via restorecon — not automatically on mkdir. Without this nginx
+# (httpd_t) gets permission denied and returns 403 — including on certbot's
+# ACME challenge files, breaking cert issuance.
+- name: Apply SELinux context to /var/www (httpd_sys_content_t)
+  ansible.builtin.command: restorecon -Rv /var/www
+  changed_when: false
+  when: ansible_facts['selinux']['status'] | default('disabled') == 'enabled'
+
+# Per-vhost cert presence check; result drives conditional SSL-block render
+# in vhost-{app,metrics}.conf.j2.
+- name: Stat existing certs
+  ansible.builtin.stat:
+    path: "/etc/letsencrypt/live/{{ item.domain }}/fullchain.pem"
+  register: nginx_cert_stat
+  loop: "{{ nginx_vhosts }}"
+  loop_control:
+    label: "{{ item.domain }}"
+
+- name: Build cert_exists map keyed by domain
+  ansible.builtin.set_fact:
+    nginx_cert_exists_map: >-
+      {{
+        nginx_cert_exists_map | default({}) |
+        combine({ item.item.domain: item.stat.exists })
+      }}
+  loop: "{{ nginx_cert_stat.results }}"
+  loop_control:
+    label: "{{ item.item.domain }}"
+
+- name: Deploy rate-limit config
+  ansible.builtin.template:
+    src: ratelimit.conf.j2
+    dest: /etc/nginx/conf.d/ratelimit.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload nginx
+
+- name: Deploy nginx vhost configs (conf.d)
+  ansible.builtin.template:
+    src: "vhost-{{ item.kind }}.conf.j2"
+    dest: "/etc/nginx/conf.d/{{ item.domain }}.conf"
+    owner: root
+    group: root
+    mode: "0644"
+  vars:
+    cert_exists: "{{ nginx_cert_exists_map[item.domain] }}"
+  loop: "{{ nginx_vhosts }}"
+  loop_control:
+    label: "{{ item.domain }}"
+  notify: Reload nginx
+
+# If any template above changed a config, the `Reload nginx` handler is
+# queued. Ansible normally flushes handlers at end-of-play, but certbot
+# (next role) issues ACME challenges via webroot — it depends on nginx
+# having the up-to-date location block. So flush handlers here explicitly.
+# If nothing changed, flush is a no-op (handler not queued) and nginx is
+# untouched — important: blanket reload used to drop long-lived connections
+# (SSE, WebSocket) on every provision.
+- name: Flush handlers (apply pending nginx reload before certbot)
+  ansible.builtin.meta: flush_handlers

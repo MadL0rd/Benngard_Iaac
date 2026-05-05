@@ -1,0 +1,37 @@
+---
+# Single-purpose host running WireGuard. Operators connect here; traffic to
+# dev/metrics is NATed (destinations see src=vpn-public-IP, which is in
+# nginx_whitelist_ips in group_vars/all/main.yml).
+
+server_users:
+  - name: madlord
+    # wheel only — Docker isn't installed on vpn (docker role doesn't run
+    # here: vpn_server is intentionally outside all_servers in the inventory).
+    groups: "wheel"
+    ssh_key: "{{ lookup('file', madlord_ssh_pubkey) }}"
+    password: "{{ vault_madlord_password }}"
+
+# wg0 address on the vpn host.
+wireguard_server_ip: "10.10.0.1"
+
+# ACL for traffic transiting the vpn host. Destinations see
+# src=vpn-public-IP (must be in nginx_whitelist_ips, see group_vars/all/main.yml).
+wireguard_forward_targets:
+  - dst: "{{ hostvars['dev'].ansible_host }}"
+    ports: [443]
+  - dst: "{{ hostvars['metrics'].ansible_host }}"
+    ports: [443]
+
+# VPN clients.
+# public_key:  wg pubkey < ~/.wireguard/client.key
+# vpn_ip:      unique address in 10.10.0.0/24 (server = 10.10.0.1)
+wireguard_peers:
+  - name: anton_tek
+    public_key: "{{ lookup('file', playbook_dir + '/../wireguard/keys/anton_tek.pub') }}"
+    vpn_ip: "10.10.0.2"
+  - name: mkibardin
+    public_key: "{{ lookup('file', playbook_dir + '/../wireguard/keys/mkibardin.pub') }}"
+    vpn_ip: "10.10.0.3"
+  - name: andreas_belo
+    public_key: "{{ lookup('file', playbook_dir + '/../wireguard/keys/andreas_belo.pub') }}"
+    vpn_ip: "10.10.0.4"

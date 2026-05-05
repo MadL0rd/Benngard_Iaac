@@ -1,0 +1,32 @@
+---
+# Host firewall — firewalld + restrictive public zone.
+#
+# Declarative: the allowlist lives in templates/public-zone.xml.j2 (ssh,
+# http, https). firewalld --reload applies it.
+#
+# Exoscale Security Groups already filter 22/80/443/51820 at the cloud
+# layer (see docs/exoscale-infrastructure.md); firewalld is defense in depth.
+
+- name: Install firewalld
+  ansible.builtin.dnf:
+    name: firewalld
+    state: present
+  register: hardening_dnf_firewalld
+  until: hardening_dnf_firewalld is succeeded
+  retries: 3
+  delay: 10
+
+- name: Start and enable firewalld
+  ansible.builtin.systemd:
+    name: firewalld
+    state: started
+    enabled: true
+
+- name: Apply declarative public-zone config
+  ansible.builtin.template:
+    src: public-zone.xml.j2
+    dest: /etc/firewalld/zones/public.xml
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload firewalld

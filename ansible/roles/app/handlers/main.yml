@@ -1,0 +1,20 @@
+---
+# Recreate otel-collector when its bind-mounted config (otel-collector-config.yml)
+# changes. Compose v2 doesn't detect content changes in bind-mounted files —
+# only declarations in compose YAML and env vars. So a normal `state: present`
+# in the role's main task does NOT pick up otel-collector-config.yml edits and
+# the running container silently keeps the old config.
+#
+# `recreate: always` forces compose to tear down and recreate just this one
+# service, which re-establishes the bind-mount against the current inode.
+# ~5s outage of OTel forwarding on this host; app SDK buffers exports and
+# resumes when the new container is healthy.
+- name: Restart otel-collector
+  community.docker.docker_compose_v2:
+    project_src: "{{ infra_deploy_dir }}"
+    files: ["docker-compose.infra.yml"]
+    services: [otel-collector]
+    state: present
+    recreate: always
+  become: true
+  become_user: "{{ deploy_user }}"

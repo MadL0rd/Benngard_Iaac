@@ -1,0 +1,37 @@
+scrape_configs:
+  - job_name: cadvisor
+    scrape_interval: 15s
+    static_configs:
+      - targets: ["cadvisor:8080"]
+    relabel_configs:
+      - target_label: deployment_environment
+        replacement: metrics
+
+  # Blackbox HTTP probes against the public nginx — catches container down,
+  # app hangs, 5xx, and expired TLS in one signal (vs. just-container-gone).
+  # On metrics host /deploy-gate/health goes to deploy-gate — alert
+  # cicd-deploy-gate-down fires when this probe drops to 0.
+  - job_name: blackbox
+    scrape_interval: 60s
+    metrics_path: /probe
+    params:
+      module: [http_2xx]
+    static_configs:
+      - targets: ["https://dev.benngard.de/health"]
+        labels:
+          deployment_environment: dev
+      - targets: ["https://benngard.de/health"]
+        labels:
+          deployment_environment: prod
+      - targets: ["https://metrics.benngard.de/deploy-gate/health"]
+        labels:
+          deployment_environment: metrics
+    relabel_configs:
+      # Standard blackbox idiom: the probe target moves to ?target=... and
+      # the scrape itself hits blackbox-exporter:9115.
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: blackbox-exporter:9115

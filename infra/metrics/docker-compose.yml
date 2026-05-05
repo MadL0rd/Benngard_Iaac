@@ -1,0 +1,154 @@
+---
+# Metrics host stack: VictoriaMetrics + Tempo + Loki + Grafana, deployed
+# by the `metrics` Ansible role.
+#
+# Host port bindings (rest are internal to metrics-net):
+#   victoriametrics:8428, tempo:4318, loki:3100 — bound to
+#     ${METRICS_PRIVATE_IP} so app servers reach them over the private
+#     10.0.0.0/24 network and nothing else.
+#   grafana:3000 — 127.0.0.1 only; host nginx terminates TLS on :443.
+#
+# METRICS_PRIVATE_IP comes from the .env rendered by the metrics role
+# (group_vars/metrics_server.yml:metrics_private_ip).
+
+services:
+  victoriametrics:
+    image: "victoriametrics/victoria-metrics:v1.142.0"
+    container_name: victoriametrics
+    restart: unless-stopped
+    command:
+      - "-storageDataPath=/victoria-metrics-data"
+      - "-retentionPeriod=90d"
+      - "-httpListenAddr=:8428"
+      - "-promscrape.config=/etc/prometheus/prometheus.yml"
+    volumes:
+      - vm-data:/victoria-metrics-data
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "${METRICS_PRIVATE_IP}:8428:8428"
+    networks:
+      - metrics-net
+
+  tempo:
+    image: "grafana/tempo:2.10.5"
+    container_name: tempo
+    restart: unless-stopped
+    command: ["-config.file=/etc/tempo/tempo.yml"]
+    volumes:
+      - ./tempo.yml:/etc/tempo/tempo.yml:ro
+      - tempo-data:/var/tempo
+    ports:
+      - "${METRICS_PRIVATE_IP}:4318:4318"
+    networks:
+      - metrics-net
+
+  loki:
+    image: "grafana/loki:3.7.1"
+    container_name: loki
+    restart: unless-stopped
+    command: ["-config.file=/etc/loki/loki.yml"]
+    volumes:
+      - ./loki.yml:/etc/loki/loki.yml:ro
+      - loki-data:/loki
+    ports:
+      - "${METRICS_PRIVATE_IP}:3100:3100"
+    networks:
+      - metrics-net
+
+  # Ships host journald into Loki so systemd unit logs (auto-reboot,
+  # dnf-automatic, sshd, nginx, ...) are visible in Grafana.
+  promtail:
+    image: "grafana/promtail:3.6.10"
+    container_name: promtail
+    restart: unless-stopped
+    command: ["-config.file=/etc/promtail/promtail.yml"]
+    volumes:
+      - ./promtail.yml:/etc/promtail/promtail.yml:ro
+      # Both persistent (/var/log) and ephemeral (/run) journal paths.
+      - /var/log/journal:/var/log/journal:ro
+      - /run/log/journal:/run/log/journal:ro
+      # machine-id is required by journald for index lookup.
+      - /etc/machine-id:/etc/machine-id:ro
+      - promtail-positions:/tmp
+    networks:
+      - metrics-net
+    depends_on:
+      - loki
+
+  grafana:
+    image: "grafana/grafana:13.0.1"
+    container_name: grafana
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      GF_SECURITY_ADMIN_USER: "${GRAFANA_ADMIN_USER}"
+      GF_SECURITY_ADMIN_PASSWORD: "${GRAFANA_ADMIN_PASSWORD}"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_SECURITY_ALLOW_EMBEDDING: "true"
+      GF_EXPLORE_ENABLED: "true"
+      # root_url drives .ExternalURL in alert templates → the
+      # "Open dashboard" link in Telegram notifications.
+      GF_SERVER_ROOT_URL: "${GRAFANA_ROOT_URL}"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
+      - ./grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./grafana/provisioning/alerting:/etc/grafana/provisioning/alerting:ro
+      - ./grafana/dashboards:/etc/grafana/dashboards:ro
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      - victoriametrics
+      - tempo
+      - loki
+    networks:
+      - metrics-net
+
+  blackbox-exporter:
+    image: "prom/blackbox-exporter:v0.28.0"
+    container_name: blackbox-exporter
+    restart: unless-stopped
+    command: ["--config.file=/etc/blackbox/blackbox.yml"]
+    volumes:
+      - ./blackbox.yml:/etc/blackbox/blackbox.yml:ro
+    networks:
+      - metrics-net
+    # No host port — VictoriaMetrics scrapes it over metrics-net.
+
+  cadvisor:
+    image: "gcr.io/cadvisor/cadvisor:v0.55.1"
+    container_name: cadvisor
+    restart: unless-stopped
+    privileged: true
+    command:
+      - --docker_only=true
+      - --housekeeping_interval=15s
+      # Do NOT add --containerd/--docker= flags: defaults pick up docker.sock
+      # and emit `name` label as the docker container name. Adding them flips
+      # to containerd-only mode where `name` becomes the container-ID hash,
+      # breaking alert regexes like `name=~"grafana|loki|..."`.
+    devices:
+      - /dev/kmsg
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /run/containerd:/run/containerd:ro
+      - /sys:/sys:ro
+      - /var/lib/docker:/var/lib/docker:ro
+      - /var/lib/containerd:/var/lib/containerd:ro
+      - /etc/machine-id:/etc/machine-id:ro
+      - /dev/disk:/dev/disk:ro
+    networks:
+      - metrics-net
+
+volumes:
+  vm-data:
+  tempo-data:
+  loki-data:
+  grafana-data:
+  promtail-positions:
+
+networks:
+  metrics-net:
+    driver: bridge

@@ -1,0 +1,27 @@
+---
+# One-shot bootstrap — runs ONCE per VDS lifetime.
+#
+# Logs in as `rockylinux` (cloud-init default user on Exoscale Rocky 10) with
+# the initial key. Its pub half must already sit in
+# /home/rockylinux/.ssh/authorized_keys — on Exoscale that happens by
+# selecting an SSH key when creating the instance.
+#
+# Roles:
+#   1. common    — packages, timezone, sysctl
+#   2. docker    — Docker CE (with conditional kernel upgrade)
+#   3. users     — creates madlord and deploy-agent with SSH keys
+#   4. hardening — firewalld + sshd (no-root, no-password) + SELinux
+#
+# After this, use provision.yml (logs in as madlord).
+
+- name: Bootstrap — first-time setup of all servers
+  hosts: all_servers
+  remote_user: rockylinux
+  become: true
+  vars:
+    ansible_ssh_private_key_file: "{{ initial_ssh_private_key }}"
+  roles:
+    - common
+    - docker
+    - users
+    - hardening

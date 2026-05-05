@@ -1,0 +1,40 @@
+---
+# Full infra provision — idempotent, run repeatedly on config changes.
+# Logs in as `madlord` (created in bootstrap.yml); key is in
+# group_vars/all/main.yml via madlord_ssh_private_key.
+#
+# Limit scope:
+#   make provision ANSIBLE_OPTS='--limit app_servers'
+#   make provision ANSIBLE_OPTS='--limit metrics_server'
+
+- name: Base setup for all servers
+  hosts: all_servers
+  remote_user: madlord
+  become: true
+  roles:
+    - common
+    - docker
+    - nginx
+    - certbot
+
+# app: otel-collector + cadvisor (observability).
+# backend, frontend: CI/CD deploy infra (compose, .env, deploy.sh).
+- name: App servers (dev + prod) — observability + deploy infra
+  hosts: app_servers
+  remote_user: madlord
+  become: true
+  roles:
+    - app
+    - backend
+    - frontend
+
+# deploy-gate is a native systemd service on metrics (not a container) —
+# logs flow journald → promtail → Loki like other host services. Role
+# order is free (deploy-gate is independent of metrics).
+- name: Metrics stack + CI/CD orchestrator
+  hosts: metrics_server
+  remote_user: madlord
+  become: true
+  roles:
+    - metrics
+    - deploy_gate

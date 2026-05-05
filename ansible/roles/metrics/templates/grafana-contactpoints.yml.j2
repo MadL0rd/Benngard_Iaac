@@ -1,0 +1,56 @@
+apiVersion: 1
+
+# One contact-point per env so we can route to separate Telegram threads.
+# All point at the same chat_id but use different message_thread_id (forum
+# topics). dev sets disable_notifications: true → silent delivery.
+# Empty thread_id → field omitted, message lands in General.
+#
+# Message body comes from the shared `telegram.message` template (templates.yml).
+contactPoints:
+  - orgId: 1
+    name: Telegram-dev
+    receivers:
+      - uid: telegram-dev
+        type: telegram
+        settings:
+          bottoken: "{{ vault_telegram_bot_token }}"
+          chatid: "{{ vault_telegram_chat_id }}"
+{% if vault_telegram_thread_dev %}
+          message_thread_id: "{{ vault_telegram_thread_dev }}"
+{% endif %}
+          parse_mode: HTML
+          message: '{% raw %}{{ template "telegram.message" . }}{% endraw %}'
+          disable_notifications: true
+        disableResolveMessage: false
+
+  - orgId: 1
+    name: Telegram-prod
+    receivers:
+      - uid: telegram-prod
+        type: telegram
+        settings:
+          bottoken: "{{ vault_telegram_bot_token }}"
+          chatid: "{{ vault_telegram_chat_id }}"
+{% if vault_telegram_thread_prod %}
+          message_thread_id: "{{ vault_telegram_thread_prod }}"
+{% endif %}
+          parse_mode: HTML
+          message: '{% raw %}{{ template "telegram.message" . }}{% endraw %}'
+          disable_notifications: false
+        disableResolveMessage: false
+
+  - orgId: 1
+    name: Telegram-metrics
+    receivers:
+      - uid: telegram-metrics
+        type: telegram
+        settings:
+          bottoken: "{{ vault_telegram_bot_token }}"
+          chatid: "{{ vault_telegram_chat_id }}"
+{% if vault_telegram_thread_metrics %}
+          message_thread_id: "{{ vault_telegram_thread_metrics }}"
+{% endif %}
+          parse_mode: HTML
+          message: '{% raw %}{{ template "telegram.message" . }}{% endraw %}'
+          disable_notifications: false
+        disableResolveMessage: false

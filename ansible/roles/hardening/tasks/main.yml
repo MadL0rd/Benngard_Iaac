@@ -1,0 +1,11 @@
+---
+# Hardening:
+#   1. firewall — install firewalld + apply restrictive public zone
+#                 (ssh, http, https). WG-specific rules are added by the
+#                 wireguard role on the vpn host only.
+#   2. ssh      — drop-in: PermitRootLogin no + PasswordAuthentication no.
+#   3. selinux  — enforcing + booleans + contexts for nginx/certbot.
+
+- ansible.builtin.import_tasks: firewall.yml
+- ansible.builtin.import_tasks: ssh.yml
+- ansible.builtin.import_tasks: selinux.yml

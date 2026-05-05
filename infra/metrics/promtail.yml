@@ -1,0 +1,49 @@
+# Promtail — reads host journald and pushes into the local Loki, so
+# systemd unit logs from the metrics host (sshd, nginx, docker,
+# dnf-automatic, auto-reboot, ...) are queryable in Grafana.
+
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+  log_level: warn
+
+positions:
+  filename: /tmp/positions.yml
+
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+
+scrape_configs:
+  - job_name: journald
+    journal:
+      max_age: 24h
+      json: false
+      labels:
+        job: systemd-journal
+        deployment_environment: metrics
+    relabel_configs:
+      - source_labels: ['__journal__systemd_unit']
+        target_label: 'unit'
+      - source_labels: ['__journal__hostname']
+        target_label: 'hostname'
+      # journal priority keyword: emerg|alert|crit|err|warning|notice|info|debug
+      - source_labels: ['__journal_priority_keyword']
+        target_label: 'level'
+    pipeline_stages:
+      # deploy-gate emits structured JSON via slog. Parse out event/service/env
+      # and promote them to Loki labels so dashboard queries can be cheap
+      # label-selectors instead of expensive substring regex on the message
+      # body. Other services keep their plain-text logs untouched — the match
+      # stage scopes the JSON parser to just this unit.
+      - match:
+          selector: '{unit="deploy-gate.service"}'
+          stages:
+            - json:
+                expressions:
+                  event: event
+                  service: service
+                  env: env
+            - labels:
+                event:
+                service:
+                env:

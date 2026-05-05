@@ -1,0 +1,24 @@
+---
+# Frontend deploy infra on the app server. The frontend image is
+# `FROM scratch + dist` from the Frontend repo: the container never runs,
+# it's used purely as a transport. deploy.sh does docker pull → docker
+# create → docker cp /dist → atomic rsync into {{ frontend_static_dir }}.
+#
+# This role only prepares the env (directory + deploy.sh). The actual
+# deploy is triggered by the webhook over SSH.
+
+- name: Create frontend deploy directory
+  ansible.builtin.file:
+    path: "{{ frontend_deploy_dir }}"
+    state: directory
+    owner: deploy-agent
+    group: deploy-agent
+    mode: "0750"
+
+- name: Render frontend deploy.sh
+  ansible.builtin.template:
+    src: deploy.sh.j2
+    dest: "{{ frontend_deploy_dir }}/deploy.sh"
+    owner: deploy-agent
+    group: deploy-agent
+    mode: "0750"

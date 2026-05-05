@@ -1,0 +1,57 @@
+apiVersion: 1
+
+# Шаблон сообщения для Telegram (HTML parse_mode).
+# Используется всеми тремя contact points (Telegram-dev/prod/metrics).
+# Доступные поля Grafana alerting (Alertmanager-совместимый формат):
+#   .Status                — "firing" / "resolved"
+#   .CommonLabels          — лейблы общие для всей группы алертов
+#   .CommonAnnotations     — аннотации общие для всей группы
+#   .Alerts                — массив инстансов (для restart-loop может быть >1)
+#   .Alerts[i].Labels      — лейблы конкретного инстанса
+#   .Alerts[i].Annotations — summary/description с подставленными {{ $labels.X }}
+#   .Alerts[i].StartsAt    — время старта firing
+#   .ExternalURL           — корень Grafana (Grafana канонизирует с trailing /,
+#                            поэтому конкатенируем БЕЗ ведущего слеша в суффиксе:
+#                            "{{ .ExternalURL }}d/<uid>" → ".../d/<uid>" — один слеш.
+#   .Alerts[i].Annotations.dashboard_uid — UID профильного дашборда
+#                            (проставляется per-rule в rules.yml)
+#
+# ⚠️  Известные грабли:
+#   • Sprig-функции типа trimSuffix Grafana НЕ поддерживает в alerting templates
+#     → отрежет templates.yml как invalidFormat → весь провижн алертинга упадёт.
+#   • Зарезервированные аннотации __dashboardUid__ / __panelId__ Grafana требует
+#     ПАРОЙ. Задал только __dashboardUid__ → "invalid alert rule: both annotations
+#     __dashboardUid__ and __panelId__ must be specified" → провижн умирает.
+#     Поэтому используем custom-аннотацию dashboard_uid (без подчёркиваний).
+#   • Telegram API лимит: 4096 символов на сообщение. При большом числе
+#     firing-инстансов (например критический алерт по нескольким сервисам сразу)
+#     полные description'ы каждого выходят за лимит → 400 Bad Request,
+#     нотификация не доставляется. Поэтому формат адаптивный:
+#     1 alert  → полный summary + description (привычный формат)
+#     2+ alert → bullet-список только summary'ев (компактно)
+#     Description конкретных пунктов оператор смотрит в Grafana по ссылке.
+templates:
+  - orgId: 1
+    name: telegram
+    template: |
+      {{ define "telegram.message" }}
+      {{- $count := len .Alerts -}}
+      {{- if eq .Status "firing" }}🚨 <b>FIRING</b>: {{ .CommonLabels.alertname }}{{ if gt $count 1 }} ({{ $count }}){{ end }}
+      {{- else }}✅ <b>RESOLVED</b>: {{ .CommonLabels.alertname }}{{ if gt $count 1 }} ({{ $count }}){{ end }}
+      {{- end }}
+      🏷 env: <code>{{ .CommonLabels.deployment_environment }}</code>{{ if .CommonLabels.severity }} | severity: <code>{{ .CommonLabels.severity }}</code>{{ end }}
+
+      {{ if eq $count 1 -}}
+      {{ range .Alerts -}}
+      <b>{{ .Annotations.summary }}</b>
+      {{- if .Annotations.description }}
+      {{ .Annotations.description }}
+      {{- end }}
+      {{ end -}}
+      {{- else -}}
+      {{ range .Alerts -}}
+      • {{ .Annotations.summary }}
+      {{ end -}}
+      {{- end }}
+      🔗 <a href="{{ .ExternalURL }}d/{{ index (index .Alerts 0).Annotations "dashboard_uid" }}">Open dashboard</a>
+      {{- end }}

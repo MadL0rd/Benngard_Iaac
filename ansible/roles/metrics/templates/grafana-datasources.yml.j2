@@ -1,0 +1,43 @@
+apiVersion: 1
+
+datasources:
+  - name: VictoriaMetrics
+    type: prometheus
+    uid: victoriametrics
+    url: http://victoriametrics:{{ metrics_vm_port }}
+    access: proxy
+    isDefault: true
+    jsonData:
+      timeInterval: "15s"
+
+  - name: Tempo
+    type: tempo
+    uid: tempo
+    url: http://tempo:{{ metrics_tempo_api_port }}
+    access: proxy
+    jsonData:
+      tracesToLogsV2:
+        datasourceUid: loki
+        filterByTraceID: true
+        filterBySpanID: false
+        customQuery: false
+      tracesToMetrics:
+        datasourceUid: victoriametrics
+      serviceMap:
+        datasourceUid: victoriametrics
+      lokiSearch:
+        datasourceUid: loki
+      nodeGraph:
+        enabled: true
+
+  - name: Loki
+    type: loki
+    uid: loki
+    url: http://loki:{{ metrics_loki_port }}
+    access: proxy
+    jsonData:
+      derivedFields:
+        - name: TraceID
+          matcherRegex: 'trace_id=([a-f0-9]+)'
+          url: "/explore?schemaVersion=1&panes=%7B%22ska%22:%7B%22datasource%22:%22tempo%22,%22queries%22:%5B%7B%22refId%22:%22A%22,%22datasource%22:%7B%22type%22:%22tempo%22,%22uid%22:%22tempo%22%7D,%22queryType%22:%22traceql%22,%22limit%22:20,%22tableType%22:%22traces%22,%22metricsQueryType%22:%22range%22,%22serviceMapUseNativeHistograms%22:false,%22query%22:%22$${__value.raw}%22%7D%5D,%22range%22:%7B%22from%22:%22now-1h%22,%22to%22:%22now%22%7D,%22panelsState%22:%7B%22trace%22:%7B%22spanFilters%22:%7B%22spanNameOperator%22:%22%3D%22,%22serviceNameOperator%22:%22%3D%22,%22fromOperator%22:%22%3E%22,%22toOperator%22:%22%3C%22,%22tags%22:%5B%7B%22id%22:%221948e0e0-0b2%22,%22operator%22:%22%3D%22%7D%5D%7D%7D%7D,%22compact%22:false%7D%7D&orgId=1"
+          urlDisplayLabel: "Open in Tempo"

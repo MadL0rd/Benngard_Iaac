@@ -1,0 +1,66 @@
+{# {{ ansible_managed }} — non-sensitive runtime config for deploy-gate.
+
+   Secrets are NOT in here — they live in deploy-gate.env (mode 0640).
+   This file: listen address, approval timeout, deploy catalog.
+
+   Image patterns mirror the regexes that lived in the legacy
+   deploy-{backend,frontend}.sh wrappers. Registry domain is filtered
+   through regex_escape so dots become \.; the surrounding to_nice_json
+   handles the JSON-level backslash doubling.
+#}
+{# Security-essential parts only: registry+namespace+repo (so attacker with
+   pushtoken can't deploy an arbitrary image) and shell-safe tag charset
+   (so an image ref can never inject into the ssh command). Tag *format*
+   discipline (semver, calver, rc-suffix) is enforced at the GH workflow
+   trigger level, not here. #}
+{% set backend_image_re =
+     '^' ~ (registry_url | regex_escape)
+     ~ '/benngard-backend:[a-zA-Z0-9._-]+$' %}
+{% set frontend_image_re =
+     '^' ~ (registry_url | regex_escape)
+     ~ '/benngard-frontend:[a-zA-Z0-9._-]+$' %}
+{{
+  {
+    'listen': '127.0.0.1:' ~ deploy_gate_port,
+    'approval_timeout_seconds': deploy_gate_approval_timeout_seconds,
+    'tg_webhook_base_url': deploy_gate_tg_webhook_base_url,
+    'deploys': [
+      {
+        'path':           '/hooks/deploy-backend-dev',
+        'service':        'backend',
+        'env':            'dev',
+        'ssh_alias':      'dev',
+        'remote_env_var': 'BACKEND_IMAGE',
+        'remote_script':  backend_deploy_dir ~ '/deploy.sh',
+        'image_pattern':  backend_image_re
+      },
+      {
+        'path':           '/hooks/deploy-backend-prod',
+        'service':        'backend',
+        'env':            'prod',
+        'ssh_alias':      'prod',
+        'remote_env_var': 'BACKEND_IMAGE',
+        'remote_script':  backend_deploy_dir ~ '/deploy.sh',
+        'image_pattern':  backend_image_re
+      },
+      {
+        'path':           '/hooks/deploy-frontend-dev',
+        'service':        'frontend',
+        'env':            'dev',
+        'ssh_alias':      'dev',
+        'remote_env_var': 'FRONTEND_IMAGE',
+        'remote_script':  frontend_deploy_dir ~ '/deploy.sh',
+        'image_pattern':  frontend_image_re
+      },
+      {
+        'path':           '/hooks/deploy-frontend-prod',
+        'service':        'frontend',
+        'env':            'prod',
+        'ssh_alias':      'prod',
+        'remote_env_var': 'FRONTEND_IMAGE',
+        'remote_script':  frontend_deploy_dir ~ '/deploy.sh',
+        'image_pattern':  frontend_image_re
+      }
+    ]
+  } | to_nice_json
+}}

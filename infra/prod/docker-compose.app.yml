@@ -1,0 +1,41 @@
+---
+# Backend app stack — runs alongside docker-compose.infra.yml on the prod
+# app server. APP_IMAGE is injected per-deploy by the backend deploy.sh;
+# the rest of .env comes from ansible/envs/.env.api.prod. app-net is
+# external (created by Ansible, see infra compose for why).
+
+name: benngard-backend
+
+services:
+  app:
+    image: "${APP_IMAGE}"
+    container_name: benngard-app
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      OTEL_SERVICE_NAME: "benngard-backend"
+      OTEL_ENDPOINT: "http://otel-collector:4318"
+      OTEL_DEPLOYMENT_ENV: "${ENVIRONMENT:-production}"
+    volumes:
+      # Exoscale Postgres CA cert — Ansible drops it from ansible/files/.
+      # DSN in .env.api.prod points at /etc/ssl/certs/exoscale-pg-ca.pem.
+      - ./exoscale-pg-ca.pem:/etc/ssl/certs/exoscale-pg-ca.pem:ro
+    ports:
+      # Loopback only — host nginx reverse-proxies to it.
+      - "127.0.0.1:8000:8000"
+    networks:
+      - app-net
+    cpus: "${APP_CPUS:-1.0}"
+    mem_limit: "${APP_MEM:-1g}"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health',timeout=2).status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+networks:
+  app-net:
+    external: true
+    name: app-net

@@ -1,0 +1,39 @@
+# Managed by Ansible — edits get clobbered on next provision.
+[Interface]
+Address    = {{ wireguard_server_ip }}/24
+ListenPort = {{ wireguard_port }}
+PrivateKey = {{ wg_private_key_raw.content | b64decode | trim }}
+
+{% for t in wireguard_forward_targets %}
+PostUp   = iptables -t nat -A POSTROUTING -s {{ wireguard_subnet }} -d {{ t.dst }} -j MASQUERADE
+PostDown = iptables -t nat -D POSTROUTING -s {{ wireguard_subnet }} -d {{ t.dst }} -j MASQUERADE
+{% endfor %}
+
+# FORWARD: ACCEPT rules prepended (whitelist) + REJECT tail appended.
+# The REJECT tail is mandatory: vpn host has no Docker → FORWARD policy is
+# ACCEPT by default, so without it the whitelist is a no-op.
+{% for t in wireguard_forward_targets %}
+PostUp   = iptables -I FORWARD -i %i -d {{ t.dst }} -p tcp --match multiport --dports {{ t.ports | join(',') }} -j ACCEPT
+PostDown = iptables -D FORWARD -i %i -d {{ t.dst }} -p tcp --match multiport --dports {{ t.ports | join(',') }} -j ACCEPT
+{% endfor %}
+PostUp   = iptables -I FORWARD -o %i -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+PostDown = iptables -D FORWARD -o %i -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+PostUp   = iptables -A FORWARD -i %i -j REJECT --reject-with icmp-port-unreachable
+PostDown = iptables -D FORWARD -i %i -j REJECT --reject-with icmp-port-unreachable
+PostUp   = iptables -A FORWARD -o %i -j REJECT --reject-with icmp-port-unreachable
+PostDown = iptables -D FORWARD -o %i -j REJECT --reject-with icmp-port-unreachable
+
+# INPUT: positions 1/2 mandatory — must come before firewalld zone jumps,
+# else SSH/22 over wg0 would be allowed by the public zone.
+PostUp   = iptables -I INPUT 1 -i %i -p icmp -j ACCEPT
+PostUp   = iptables -I INPUT 2 -i %i -j DROP
+PostDown = iptables -D INPUT -i %i -p icmp -j ACCEPT
+PostDown = iptables -D INPUT -i %i -j DROP
+
+{% for peer in wireguard_peers %}
+[Peer]
+# {{ peer.name }}
+PublicKey  = {{ peer.public_key }}
+AllowedIPs = {{ peer.vpn_ip }}/32
+
+{% endfor %}

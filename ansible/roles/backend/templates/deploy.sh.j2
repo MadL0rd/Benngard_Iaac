@@ -1,0 +1,44 @@
+#!/bin/bash
+# Backend deploy entrypoint — invoked by webhook on metrics over SSH.
+# Runs as deploy-agent in /opt/benngard-app.
+#
+# Contract: BACKEND_IMAGE comes in via the webhook payload; everything else
+# is local state.
+#
+# {{ ansible_managed }}
+
+set -euo pipefail
+
+cd "{{ backend_deploy_dir }}"
+
+: "${BACKEND_IMAGE:?BACKEND_IMAGE not set}"
+
+echo "[$(date -Iseconds)] deploy backend image=$BACKEND_IMAGE env={{ deploy_env }}"
+
+# Pull new image. Registry unavailable → exit non-zero; webhook sees the
+# failure and a Loki alert rule fires.
+docker pull "$BACKEND_IMAGE"
+
+# Record the currently-deployed image so the ansible handler can restart
+# the container when .env changes.
+echo "$BACKEND_IMAGE" > "{{ backend_deploy_dir }}/.app_image"
+
+# compose up -d atomically swaps old → new image. AUTO_MIGRATE=true in the
+# backend's lifespan runs `alembic upgrade head` before uvicorn starts.
+APP_IMAGE="$BACKEND_IMAGE" docker compose \
+  -f "{{ backend_deploy_dir }}/docker-compose.app.yml" \
+  up -d --remove-orphans
+
+# Healthcheck: 90s budget, 3s interval. Hits the app's /health via loopback
+# (same socket app listens on) — confirms container + nginx vhost are live.
+for i in $(seq 1 30); do
+  if curl -sf -m 2 "http://127.0.0.1:{{ app_port }}/health" >/dev/null; then
+    echo "[$(date -Iseconds)] deploy ok healthcheck=$i image=$BACKEND_IMAGE"
+    exit 0
+  fi
+  sleep 3
+done
+
+echo "[$(date -Iseconds)] deploy FAILED — healthcheck timeout image=$BACKEND_IMAGE" >&2
+docker compose -f "{{ backend_deploy_dir }}/docker-compose.app.yml" logs --tail 200 app >&2
+exit 1

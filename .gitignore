@@ -1,0 +1,30 @@
+# MacOS
+.DS_Store
+
+# Ansible inventory с реальными IP (создаётся вручную из hosts.ini.example)
+ansible/inventory/hosts.ini
+
+# Ansible cache
+.ansible/
+ansible/.ansible/
+
+# LLM
+.claude
+
+# Мастер-пароль для Ansible Vault (никогда не коммитить)
+.vault_pass
+
+# Plain версии vault-encrypted файлов — содержат секреты в открытом виде,
+# существуют только локально между `make vault-decrypt` и `make vault-encrypt`.
+# Encrypted версии (vault.yml, .env.api.{dev,prod}) коммитятся в git.
+ansible/group_vars/all/vault.yml.plain
+ansible/envs/.env.api.*.plain
+
+# WireGuard — приватные ключи и конфиги никогда не коммитить, публичные (.pub) — можно
+wireguard/keys/*.key
+wireguard/keys/*.conf
+
+*.dump
+
+# Local cross-compiled deploy-gate binary (shipped to metrics via Ansible).
+deploy-gate/dist/

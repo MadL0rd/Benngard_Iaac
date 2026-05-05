@@ -1,0 +1,17 @@
+# {{ ansible_managed }}
+# Used via `ssh -F {{ deploy_gate_etc_dir }}/ssh-config <host>` from the
+# deploy-gate service (alias "dev" or "prod" → app-server private IP).
+
+Host dev
+    HostName     {{ hostvars['dev']['private_ip'] }}
+    User         deploy-agent
+    IdentityFile {{ deploy_gate_etc_dir }}/id_ed25519
+    UserKnownHostsFile {{ deploy_gate_etc_dir }}/known_hosts
+    StrictHostKeyChecking yes
+
+Host prod
+    HostName     {{ hostvars['prod']['private_ip'] }}
+    User         deploy-agent
+    IdentityFile {{ deploy_gate_etc_dir }}/id_ed25519
+    UserKnownHostsFile {{ deploy_gate_etc_dir }}/known_hosts
+    StrictHostKeyChecking yes

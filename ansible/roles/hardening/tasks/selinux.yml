@@ -1,0 +1,38 @@
+---
+- name: Set SELinux to enforcing
+  ansible.posix.selinux:
+    policy: targeted
+    state: enforcing
+  register: hardening_selinux_result
+
+# If SELinux was disabled, a reboot is required to enable it.
+- name: Reboot to apply SELinux
+  ansible.builtin.reboot:
+    reboot_timeout: 180
+    msg: "Reboot to enable SELinux enforcing mode"
+  when: hardening_selinux_result.reboot_required | default(false)
+
+# After reboot ansible_facts["selinux"]["status"] flips to enabled.
+- name: Refresh facts after reboot
+  ansible.builtin.setup:
+  when: hardening_selinux_result.reboot_required | default(false)
+
+- name: Allow nginx to proxy to containers
+  ansible.posix.seboolean:
+    name: httpd_can_network_connect
+    state: true
+    persistent: true
+  when: ansible_facts["selinux"]["status"] == 'enabled'
+
+- name: Set SELinux context for /etc/letsencrypt
+  community.general.sefcontext:
+    target: "/etc/letsencrypt(/.*)?"
+    setype: cert_t
+    state: present
+  when: ansible_facts["selinux"]["status"] == 'enabled'
+
+- name: Apply SELinux context (restorecon)
+  ansible.builtin.command: restorecon -Rv /etc/letsencrypt
+  changed_when: false
+  failed_when: false
+  when: ansible_facts["selinux"]["status"] == 'enabled'

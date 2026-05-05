@@ -1,0 +1,70 @@
+---
+# Lay out backend deploy artefacts on the app server. The actual deploy
+# (docker pull / compose up) runs via deploy.sh triggered by the webhook on
+# metrics. Ansible only prepares the env: directory, compose, .env
+# (vault-encrypted), deploy.sh, docker login.
+
+- name: Create backend deploy directory
+  ansible.builtin.file:
+    path: "{{ backend_deploy_dir }}"
+    state: directory
+    owner: deploy-agent
+    group: deploy-agent
+    mode: "0750"
+
+- name: Copy docker-compose.app.yml
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../infra/{{ deploy_env }}/docker-compose.app.yml"
+    dest: "{{ backend_deploy_dir }}/docker-compose.app.yml"
+    owner: deploy-agent
+    group: deploy-agent
+    mode: "0644"
+  notify: Restart benngard-backend
+
+# Exoscale managed Postgres CA — public cert, required for sslmode=verify-full.
+# DATABASE_URL: ?sslmode=verify-full&sslrootcert=/etc/ssl/certs/exoscale-pg-ca.pem
+# Compose bind-mounts it into the backend container. The mainstream system
+# trust store (debian ca-certificates) doesn't include it — Exoscale's cert
+# is not from a public CA.
+- name: Push Exoscale Postgres CA cert
+  ansible.builtin.copy:
+    src: files/exoscale-pg-ca.pem
+    dest: "{{ backend_deploy_dir }}/exoscale-pg-ca.pem"
+    owner: deploy-agent
+    group: deploy-agent
+    mode: "0644"
+  notify: Restart benngard-backend
+
+# .env is vault-encrypted. ansible.builtin.copy auto-decrypts vault sources
+# when a vault password is available. decrypt: true is explicit for older
+# Ansible versions.
+- name: Push backend .env (vault-decrypted)
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/envs/.env.api.{{ deploy_env }}"
+    dest: "{{ backend_deploy_dir }}/.env"
+    owner: deploy-agent
+    group: deploy-agent
+    mode: "0640"
+    decrypt: true
+  tags: [env]
+  notify: Restart benngard-backend
+
+- name: Render deploy.sh
+  ansible.builtin.template:
+    src: deploy.sh.j2
+    dest: "{{ backend_deploy_dir }}/deploy.sh"
+    owner: deploy-agent
+    group: deploy-agent
+    mode: "0750"
+
+# `docker login` writes a token to ~deploy-agent/.docker/config.json so
+# `docker pull` as deploy-agent works without re-auth on every deploy.
+- name: Docker login to registry (deploy-agent)
+  community.docker.docker_login:
+    registry_url: "{{ registry_url.split('/')[0] }}"
+    username: "{{ vault_registry_pull_username }}"
+    password: "{{ vault_registry_pull_token }}"
+    reauthorize: true
+  become: true
+  become_user: deploy-agent
+  no_log: true

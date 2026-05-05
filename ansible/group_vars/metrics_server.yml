@@ -1,0 +1,28 @@
+---
+# Only madlord — deploy-agent isn't needed on metrics.
+server_users:
+  - name: madlord
+    groups: "wheel,docker"
+    ssh_key: "{{ lookup('file', madlord_ssh_pubkey) }}"
+    password: "{{ vault_madlord_password }}"
+
+# Private IP of metrics in the `Benngard` network (10.0.0.0/24).
+# VictoriaMetrics/Tempo/Loki bind their published ports here — nothing
+# is exposed on the public interface.
+# Source of truth: docs/exoscale-infrastructure.md.
+metrics_private_ip: "10.0.0.138"
+
+nginx_vhosts:
+  - kind: metrics
+    domain: metrics.benngard.de
+    upstream_port: "{{ metrics_grafana_port }}"
+    whitelist: true
+
+vm_retention: "90d"
+tempo_trace_retention: "720h"  # 30d
+# Loki retention — compactor purges chunks older than this.
+loki_log_retention: "2160h"    # 90d
+
+# Grafana users (logins + passwords) come from vault.
+grafana_users: "{{ vault_grafana_users }}"
+

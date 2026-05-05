@@ -1,0 +1,72 @@
+---
+# Auto-reboot — after the weekly dnf-automatic security patches, checks
+# `needs-restarting -r` and reboots the host if needed (new kernel / glibc /
+# openssl / systemd).
+#
+# Canary pattern via group_vars:
+#   dev_app:           OnCalendar=Tue 04:00  (1h after install at 03:00)
+#   prod_app, metrics: OnCalendar=Wed 04:00  (24h buffer after dev)
+# If dev dies Tuesday, operator can disable auto_reboot_enabled on
+# prod/metrics or fix the package before Wednesday.
+
+- name: Conditional-reboot script (acts only when needs-restarting says so)
+  ansible.builtin.copy:
+    dest: /usr/local/bin/maybe-reboot.sh
+    owner: root
+    group: root
+    mode: "0755"
+    content: |
+      #!/bin/bash
+      # Managed by Ansible — common role / auto_reboot.
+      # needs-restarting -r: exit 0 = no reboot needed, exit 1 = required.
+      set -eu
+
+      if needs-restarting -r >/dev/null 2>&1; then
+          logger -t auto-reboot "no reboot needed"
+          exit 0
+      fi
+
+      logger -t auto-reboot "reboot required after dnf-automatic, rebooting in 60s"
+      sleep 60
+      systemctl reboot
+
+- name: systemd unit — auto-reboot.service
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/auto-reboot.service
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      # Managed by Ansible — common role / auto_reboot.
+      [Unit]
+      Description=Reboot host if kernel/library updates require it
+      ConditionPathExists=/usr/bin/needs-restarting
+
+      [Service]
+      Type=oneshot
+      ExecStart=/usr/local/bin/maybe-reboot.sh
+
+- name: systemd timer — auto-reboot.timer ({{ auto_reboot_oncalendar }})
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/auto-reboot.timer
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      # Managed by Ansible — common role / auto_reboot.
+      [Unit]
+      Description=Weekly auto-reboot check (after dnf-automatic)
+
+      [Timer]
+      OnCalendar={{ auto_reboot_oncalendar }}
+      Persistent=true
+
+      [Install]
+      WantedBy=timers.target
+
+- name: Enable auto-reboot.timer
+  ansible.builtin.systemd:
+    name: auto-reboot.timer
+    state: started
+    enabled: true
+    daemon_reload: true

@@ -1,0 +1,65 @@
+---
+# Шаблон для vault.yml.plain.
+# Удобный путь:
+#   make vault-init       # скопирует example → vault.yml.plain + сгенерит пароли
+#   <ручками — telegram token, chat_id, registry tokens>
+#   make vault-encrypt    # vault.yml.plain → vault.yml (encrypted, committable)
+#
+# Маркеры:
+#   CHANGE_ME_PASSWORD — `make vault-init` заменит на `openssl rand -hex 16`
+#   CHANGE_ME          — заполнить руками (нельзя автоматически — это id/токены)
+
+# Пароль пользователя madlord на серверах.
+# Используется для: sudo (ansible become) + установки пароля при создании юзера.
+vault_madlord_password: "CHANGE_ME_PASSWORD"
+
+# Grafana: встроенный admin (GF_SECURITY_ADMIN_USER/PASSWORD).
+# Используется для первого запуска и API-вызовов из Ansible.
+vault_grafana_admin_password: "CHANGE_ME_PASSWORD"
+
+# Дополнительные пользователи Grafana — создаются через API после старта.
+# Роли: Admin, Editor, Viewer
+vault_grafana_users:
+  - login: madlord
+    name: Anton
+    password: "CHANGE_ME_PASSWORD"
+    role: Admin
+    grafana_admin: true
+  - login: mkibardin
+    name: Read Only
+    password: "CHANGE_ME_PASSWORD"
+    role: Viewer
+  - login: andreas_belo
+    name: Read Only
+    password: "CHANGE_ME_PASSWORD"
+    role: Viewer
+
+# Telegram-бот. Один и тот же токен используется и для алертов Grafana,
+# и для deploy-gate (бот сам ничего не решает — только мессенджер; апрув
+# деплоев аутентифицируется по callback_query.from.id, см. deploy-gate).
+vault_telegram_bot_token: "CHANGE_ME"
+vault_telegram_chat_id: "CHANGE_ME"
+vault_telegram_thread_dev: ""
+vault_telegram_thread_prod: ""
+vault_telegram_thread_metrics: ""
+# Отдельный тред в чате под апрувы деплоев — чтобы не теряться под шумом
+# алертов. Создаётся в TG руками; ID = number в URL треда.
+vault_telegram_thread_deploys: "CHANGE_ME"
+# Telegram user_id, которым разрешено апрувить/отклонять деплои. Получить
+# через @userinfobot. Любые id не из списка → silent ignore + лог.
+vault_telegram_approvers: []
+
+# ── CI/CD ──────────────────────────────────────────────────────────────────────
+
+# Container registry pull credentials. Создаются в Exoscale →
+# Container Registry → Access Tokens с правами Pull, List Tag.
+# Используются Ansible'ом для `docker login` на app-серверах перед `docker pull`.
+# В Exoscale username — это login токена (часть до `:` в "user:password" pair).
+vault_registry_pull_username: "CHANGE_ME"
+vault_registry_pull_token: "CHANGE_ME"
+
+# HMAC SHA256 secret для GH webhook → deploy-gate. Должен совпадать с GH Secret
+# WEBHOOK_SECRET в Backend и Frontend репо.
+# Генерация: openssl rand -hex 32 (CHANGE_ME_PASSWORD автоматизируется
+# через make vault-init).
+vault_webhook_secret: "CHANGE_ME_PASSWORD"

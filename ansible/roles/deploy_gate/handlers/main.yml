@@ -1,0 +1,9 @@
+---
+- name: Reload systemd
+  ansible.builtin.systemd:
+    daemon_reload: true
+
+- name: Restart deploy-gate
+  ansible.builtin.systemd:
+    name: deploy-gate
+    state: restarted

@@ -1,0 +1,18 @@
+---
+# deploy-gate — CI/CD orchestrator with out-of-band Telegram approval.
+# See ../../../deploy-gate/README.md for threat model and flow.
+
+deploy_gate_user:    deploy-gate
+deploy_gate_port:    9000
+deploy_gate_binary:  /usr/local/bin/deploy-gate
+
+# Runtime config + ssh material. Same dir adnanh/webhook used.
+deploy_gate_etc_dir: /etc/benngard-deploy
+
+# Auto-deny pending approvals after this.
+deploy_gate_approval_timeout_seconds: 600   # 10 min
+
+# Public URL prefix Telegram POSTs callback_query updates to — combined
+# in deploy-gate with the fixed /tg/callback path. Includes the
+# /deploy-gate route prefix so nginx can keep the vhost root for Grafana.
+deploy_gate_tg_webhook_base_url: "https://metrics.benngard.de/deploy-gate"

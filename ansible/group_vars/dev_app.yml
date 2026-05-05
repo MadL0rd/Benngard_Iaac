@@ -1,0 +1,23 @@
+---
+deploy_env: "dev"
+otel_deployment_env: "dev"
+
+# Canary: dev reboots Tue 04:00 — 24h ahead of prod/metrics. If it breaks,
+# the operator has Tuesday to either disable auto_reboot_enabled on
+# prod/metrics or fix the package before Wed 04:00.
+auto_reboot_oncalendar: "Tue 04:00"
+
+# Private IP of metrics in the `Benngard` network (10.0.0.0/24).
+# OTel traffic goes over the private interface (ens6 on Exoscale Rocky 10) —
+# Exoscale SGs don't apply to private traffic, so 8428/4318/3100 stay closed
+# on the public side. Source of truth: docs/exoscale-infrastructure.md.
+metrics_host: "10.0.0.138"
+
+nginx_vhosts:
+  - kind: app
+    domain: dev.benngard.de
+    upstream_port: "{{ app_port }}"
+    whitelist: true
+    # Frontend SPA build is uploaded here by CI. Until the first deploy
+    # completes nginx serves 403 on `/` — `/api/` and `/health` still proxy
+    # to the backend regardless.

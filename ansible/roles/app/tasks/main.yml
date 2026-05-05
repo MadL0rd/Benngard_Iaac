@@ -1,0 +1,64 @@
+---
+# Ansible owns only the infra stack (OTel Collector + cAdvisor). The app
+# itself (docker-compose.app.yml) is deployed by CI/CD.
+
+- name: Create infra deploy directory
+  ansible.builtin.file:
+    path: "{{ infra_deploy_dir }}"
+    state: directory
+    owner: "{{ deploy_user }}"
+    group: "{{ deploy_user }}"
+    mode: "0755"
+
+# app-net lives OUTSIDE compose projects: both the infra stack (this compose)
+# and benngard-app (separate compose from backend deploy.sh) attach to it.
+# If the network belonged to a compose project, `compose down` on provision
+# would remove it and break the NAT MASQUERADE rule → "no route to host"
+# from containers. With external: true compose never touches it.
+- name: Create docker network app-net (shared between infra and app compose)
+  community.docker.docker_network:
+    name: app-net
+    driver: bridge
+    state: present
+  become: true
+  become_user: "{{ deploy_user }}"
+
+# Bind-mount files must exist as FILES (not directories) before `compose up`,
+# else Docker creates them as directories and the next template/copy fails.
+# We therefore write configs first; compose v2 recreates containers via
+# --remove-orphans if their config changed.
+
+- name: Copy docker-compose.infra.yml
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../infra/{{ deploy_env }}/docker-compose.infra.yml"
+    dest: "{{ infra_deploy_dir }}/docker-compose.infra.yml"
+    owner: "{{ deploy_user }}"
+    mode: "0644"
+
+- name: Render OTel Collector config
+  ansible.builtin.template:
+    src: otel-collector.yml.j2
+    dest: "{{ infra_deploy_dir }}/otel-collector-config.yml"
+    owner: "{{ deploy_user }}"
+    mode: "0644"
+  notify: Restart otel-collector
+
+- name: Render .env
+  ansible.builtin.template:
+    src: env.j2
+    dest: "{{ infra_deploy_dir }}/.env"
+    owner: "{{ deploy_user }}"
+    mode: "0600"
+
+# pull: missing — images are pinned in compose, no re-pull needed.
+# state: present + remove_orphans: true → compose recreates containers when
+# their config (image, env, volumes) changes, without touching app-net.
+- name: Bring up infra stack (otel-collector + cadvisor)
+  community.docker.docker_compose_v2:
+    project_src: "{{ infra_deploy_dir }}"
+    files: ["docker-compose.infra.yml"]
+    state: present
+    pull: missing
+    remove_orphans: true
+  become: true
+  become_user: "{{ deploy_user }}"

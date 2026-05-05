@@ -1,0 +1,258 @@
+---
+# Flow: render every bind-mount config under the running stack (containers
+# don't see the new content — atomic rename gives a fresh inode on the host
+# but the mount keeps the old one), then one-shot down→up at the very end.
+# Fresh containers bind-mount the new inodes and load the new config.
+#
+# Outage window: ~10-15s between compose down and compose up. Used to be
+# 2-3 minutes when `down` ran first and the long template/copy chain ran
+# under the stopped stack. (The old order also needed a `state: absent`
+# cleanup on bind-mount files to guard against the "Docker created them as
+# directories" edge case — in the new order files always exist as files
+# before compose-up, so the guard isn't needed.)
+
+- name: Create metrics deploy directory
+  ansible.builtin.file:
+    path: "{{ metrics_deploy_dir }}"
+    state: directory
+    owner: "{{ deploy_user }}"
+    group: "{{ deploy_user }}"
+    mode: "0755"
+
+- name: Render .env (Grafana credentials)
+  ansible.builtin.template:
+    src: env.j2
+    dest: "{{ metrics_deploy_dir }}/.env"
+    owner: "{{ deploy_user }}"
+    mode: "0600"
+  notify: Restart grafana
+
+- name: Create Grafana provisioning subdirectories
+  ansible.builtin.file:
+    path: "{{ metrics_deploy_dir }}/grafana/provisioning/{{ item }}"
+    state: directory
+    owner: "{{ deploy_user }}"
+    mode: "0755"
+  loop:
+    - datasources
+    - dashboards
+    - alerting
+
+- name: Create Grafana dashboards JSON directory
+  ansible.builtin.file:
+    path: "{{ metrics_deploy_dir }}/grafana/dashboards"
+    state: directory
+    owner: "{{ deploy_user }}"
+    mode: "0755"
+
+- name: Copy docker-compose.yml
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../infra/metrics/docker-compose.yml"
+    dest: "{{ metrics_deploy_dir }}/docker-compose.yml"
+    owner: "{{ deploy_user }}"
+    mode: "0644"
+  notify: Restart grafana
+
+- name: Copy prometheus.yml (VictoriaMetrics scrape config)
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../infra/metrics/prometheus.yml"
+    dest: "{{ metrics_deploy_dir }}/prometheus.yml"
+    owner: "{{ deploy_user }}"
+    mode: "0644"
+  notify: Reload victoriametrics promscrape
+
+- name: Copy promtail.yml (journald → Loki shipper)
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../infra/metrics/promtail.yml"
+    dest: "{{ metrics_deploy_dir }}/promtail.yml"
+    owner: "{{ deploy_user }}"
+    mode: "0644"
+
+- name: Copy blackbox.yml (HTTP probes for VictoriaMetrics)
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../infra/metrics/blackbox.yml"
+    dest: "{{ metrics_deploy_dir }}/blackbox.yml"
+    owner: "{{ deploy_user }}"
+    mode: "0644"
+
+- name: Render tempo.yml
+  ansible.builtin.template:
+    src: tempo.yml.j2
+    dest: "{{ metrics_deploy_dir }}/tempo.yml"
+    owner: "{{ deploy_user }}"
+    mode: "0644"
+
+- name: Render loki.yml
+  ansible.builtin.template:
+    src: loki.yml.j2
+    dest: "{{ metrics_deploy_dir }}/loki.yml"
+    owner: "{{ deploy_user }}"
+    mode: "0644"
+
+- name: Render Grafana datasources
+  ansible.builtin.template:
+    src: grafana-datasources.yml.j2
+    dest: "{{ metrics_deploy_dir }}/grafana/provisioning/datasources/datasources.yml"
+    owner: "{{ deploy_user }}"
+    mode: "0644"
+  notify: Restart grafana
+
+- name: Copy Grafana dashboard provider
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../infra/metrics/grafana/provisioning/dashboards/dashboards.yml"
+    dest: "{{ metrics_deploy_dir }}/grafana/provisioning/dashboards/dashboards.yml"
+    owner: "{{ deploy_user }}"
+    mode: "0644"
+  notify: Restart grafana
+
+# Telegram contact points — secrets from vault, so rendered as a template.
+# Mode 0644: Grafana (uid 472 inside the container) needs to read it during
+# provisioning. Host-side access is still gated by SSH-as-madlord.
+- name: Render Grafana contact points (Telegram)
+  ansible.builtin.template:
+    src: grafana-contactpoints.yml.j2
+    dest: "{{ metrics_deploy_dir }}/grafana/provisioning/alerting/contactpoints.yml"
+    owner: "{{ deploy_user }}"
+    mode: "0644"
+  notify: Restart grafana
+
+- name: Copy Grafana notification policies
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../infra/metrics/grafana/provisioning/alerting/policies.yml"
+    dest: "{{ metrics_deploy_dir }}/grafana/provisioning/alerting/policies.yml"
+    owner: "{{ deploy_user }}"
+    mode: "0644"
+  notify: Restart grafana
+
+- name: Copy Grafana alert rules
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../infra/metrics/grafana/provisioning/alerting/rules.yml"
+    dest: "{{ metrics_deploy_dir }}/grafana/provisioning/alerting/rules.yml"
+    owner: "{{ deploy_user }}"
+    mode: "0644"
+  notify: Restart grafana
+
+- name: Copy Grafana notification templates
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../infra/metrics/grafana/provisioning/alerting/templates.yml"
+    dest: "{{ metrics_deploy_dir }}/grafana/provisioning/alerting/templates.yml"
+    owner: "{{ deploy_user }}"
+    mode: "0644"
+  notify: Restart grafana
+
+# JSON dashboards do NOT notify a restart — Grafana picks them up via the
+# provisioning watcher (auto-update 30s, see dashboards.yml).
+- name: Copy JSON dashboards
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../infra/metrics/grafana/dashboards/"
+    dest: "{{ metrics_deploy_dir }}/grafana/dashboards/"
+    owner: "{{ deploy_user }}"
+    mode: "0644"
+
+# Stop the existing stack right before bringing it back up. Otherwise the
+# new containers would start with the OLD bind-mount inodes (mount is bound
+# to inode, but Ansible rewrites files via atomic rename → new host-side
+# inode that the running mount can't see). compose down releases the
+# mounts; compose up re-mounts the fresh inodes.
+#
+# `state: absent` is idempotent: no running containers → no-op exit 0;
+# running → stop + remove. On the very first provision the compose file
+# was already copied above, so no "no compose file" error.
+- name: Stop existing stack (refresh bind-mount inodes)
+  community.docker.docker_compose_v2:
+    project_src: "{{ metrics_deploy_dir }}"
+    state: absent
+  become: true
+  become_user: "{{ deploy_user }}"
+
+# pull: missing — images are pinned in compose, no re-pull needed.
+- name: Bring up metrics stack (docker compose up)
+  community.docker.docker_compose_v2:
+    project_src: "{{ metrics_deploy_dir }}"
+    state: present
+    pull: missing
+  become: true
+  become_user: "{{ deploy_user }}"
+
+# Flush any pending Restart grafana before the health check so wait_for
+# polls the freshly restarted container.
+- name: Flush pending handlers before health-check
+  ansible.builtin.meta: flush_handlers
+
+- name: Wait for Grafana to come up
+  ansible.builtin.uri:
+    url: "http://localhost:{{ metrics_grafana_port }}/api/health"
+    status_code: 200
+  register: grafana_health
+  until: grafana_health.status == 200
+  retries: 10
+  delay: 5
+
+# Always set the admin password from vault via grafana-cli.
+# Needed because GF_SECURITY_ADMIN_PASSWORD from .env only applies on first
+# Grafana init — after that the password lives in the volume and the env
+# var is ignored.
+- name: Reset Grafana admin password via CLI
+  ansible.builtin.command: >
+    docker exec grafana
+    grafana cli admin reset-admin-password '{{ vault_grafana_admin_password }}'
+  become: true
+  become_user: "{{ deploy_user }}"
+  changed_when: true
+
+# status_code 412 — user already exists; treated as idempotent.
+- name: Create Grafana users
+  ansible.builtin.uri:
+    url: "http://localhost:{{ metrics_grafana_port }}/api/admin/users"
+    method: POST
+    user: "admin"
+    password: "{{ vault_grafana_admin_password }}"
+    force_basic_auth: true
+    body_format: json
+    body:
+      name: "{{ item.name }}"
+      login: "{{ item.login }}"
+      password: "{{ item.password }}"
+      role: "{{ item.role }}"
+      isGrafanaAdmin: "{{ item.grafana_admin | default(false) }}"
+    status_code: [200, 412]
+  loop: "{{ grafana_users }}"
+  loop_control:
+    label: "{{ item.login }}"
+
+# Fetch each user's ID so we can update their org role.
+# Needed because POST /api/admin/users returns 412 (already exists) without
+# touching the role.
+#
+# We use /api/orgs/1/users (Org Admin permission) instead of
+# /api/users/lookup (Server Admin / users:read). The latter requires the
+# fixed:users:reader RBAC role, which may be missing from admin after
+# manual UI churn (e.g. deleting and recreating admin). Org Admin perms are
+# sufficient and behave more consistently.
+- name: List users in org
+  ansible.builtin.uri:
+    url: "http://localhost:{{ metrics_grafana_port }}/api/orgs/1/users"
+    method: GET
+    user: "admin"
+    password: "{{ vault_grafana_admin_password }}"
+    force_basic_auth: true
+    status_code: [200]
+  register: grafana_org_users
+
+- name: Update each user's org role
+  ansible.builtin.uri:
+    url: >-
+      http://localhost:{{ metrics_grafana_port }}/api/orgs/1/users/{{
+        (grafana_org_users.json | selectattr('login', 'equalto', item.login) | first).userId
+      }}
+    method: PATCH
+    user: "admin"
+    password: "{{ vault_grafana_admin_password }}"
+    force_basic_auth: true
+    body_format: json
+    body:
+      role: "{{ item.role }}"
+    status_code: [200]
+  loop: "{{ grafana_users }}"
+  loop_control:
+    label: "{{ item.login }}"

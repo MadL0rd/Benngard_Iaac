@@ -1,0 +1,105 @@
+---
+# WireGuard VPN server on the dedicated vpn host. Purpose: give operators
+# without a static IP access to dev and metrics — client connects to the
+# VPN, traffic is NATed through vpn (destinations see src=vpn-public-IP,
+# which is in nginx_whitelist_ips).
+
+- name: Install EPEL
+  ansible.builtin.dnf:
+    name: epel-release
+    state: present
+
+- name: Install wireguard-tools
+  ansible.builtin.dnf:
+    name: wireguard-tools
+    state: present
+
+- name: Enable ip_forward (persistent)
+  ansible.posix.sysctl:
+    name: net.ipv4.ip_forward
+    value: "1"
+    sysctl_set: true
+    state: present
+    reload: true
+
+- name: Create /etc/wireguard
+  ansible.builtin.file:
+    path: /etc/wireguard
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+# `install -m 0600` atomically creates the file with the right perms;
+# `creates:` skips the task if the key already exists.
+- name: Generate server private key (idempotent)
+  ansible.builtin.shell:
+    cmd: wg genkey | install -m 0600 /dev/stdin /etc/wireguard/private.key
+    creates: /etc/wireguard/private.key
+
+- name: Slurp private key
+  ansible.builtin.slurp:
+    src: /etc/wireguard/private.key
+  register: wg_private_key_raw
+
+- name: Derive public key from private
+  ansible.builtin.shell:
+    cmd: wg pubkey < /etc/wireguard/private.key
+  register: wg_public_key_raw
+  changed_when: false
+
+- name: Save public key (for reference when adding peers)
+  ansible.builtin.copy:
+    content: "{{ wg_public_key_raw.stdout }}\n"
+    dest: /etc/wireguard/public.key
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Fetch server public key locally (wireguard/keys/wg-server.pub)
+  ansible.builtin.fetch:
+    src: /etc/wireguard/public.key
+    dest: "{{ playbook_dir }}/../wireguard/keys/wg-server.pub"
+    flat: true
+
+- name: Deploy wg0 config
+  ansible.builtin.template:
+    src: wg0.conf.j2
+    dest: /etc/wireguard/wg0.conf
+    owner: root
+    group: root
+    mode: "0600"
+  notify: Restart wg0
+
+- name: Enable and start wg-quick@wg0
+  ansible.builtin.systemd:
+    name: wg-quick@wg0
+    state: started
+    enabled: true
+    daemon_reload: true
+
+# firewalld rules for WG. We manage them here (not in the hardening role)
+# so all WG-specific state lives in one place: provision-vpn is the single
+# point where WG firewalld rules are created/updated. The hardening role
+# only runs at bootstrap, so any later WG rule changes would drift.
+- name: Open UDP/{{ wireguard_port }} in firewalld public zone (WG endpoint)
+  ansible.posix.firewalld:
+    zone: public
+    port: "{{ wireguard_port }}/udp"
+    permanent: true
+    immediate: true
+    state: enabled
+
+# <forward/> in the public zone is required because firewalld's nftables
+# chain (filter_FORWARD priority=10) runs AFTER our ip filter FORWARD
+# (priority=0). Without explicit intra-zone forwarding it would drop the
+# wg0→ens3 transit via the default reject admin-prohibited. The real ACL
+# for "what can be forwarded" is our restrictive iptables FORWARD chain in
+# wg0.conf PostUp.
+- name: Enable intra-zone forwarding in public zone (for WG transit wg0→ens3)
+  ansible.posix.firewalld:
+    zone: public
+    forward: true
+    permanent: true
+    immediate: true
+    state: enabled

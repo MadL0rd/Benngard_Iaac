@@ -1,0 +1,30 @@
+apiVersion: 1
+
+# Маршрутизация по лейблу deployment_environment:
+#   dev     → Telegram-dev (silent)
+#   prod    → Telegram-prod
+#   metrics → Telegram-metrics
+# Default-receiver — Telegram-prod на случай если у алерта нет лейбла env
+# (теоретически возможно при ошибках в правилах). Лучше шумно, чем потерять.
+policies:
+  - orgId: 1
+    receiver: Telegram-prod
+    group_by:
+      - alertname
+      - deployment_environment
+    group_wait: 30s
+    group_interval: 5m
+    repeat_interval: 4h
+    routes:
+      - receiver: Telegram-dev
+        object_matchers:
+          - [deployment_environment, =, dev]
+        continue: false
+      - receiver: Telegram-metrics
+        object_matchers:
+          - [deployment_environment, =, metrics]
+        continue: false
+      - receiver: Telegram-prod
+        object_matchers:
+          - [deployment_environment, =, prod]
+        continue: false

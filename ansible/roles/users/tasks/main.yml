@@ -1,0 +1,35 @@
+---
+# Creates users from server_users (defined per-group in group_vars) and
+# installs their SSH keys.
+#
+# server_users item shape:
+#   name:    username
+#   groups:  comma-separated group list (e.g. "wheel,docker")
+#   ssh_key: public key — usually lookup('file', madlord_ssh_pubkey) or
+#            lookup('file', deploy_agent_ssh_pubkey); key paths live in
+#            group_vars/all/main.yml
+
+- name: Create users
+  ansible.builtin.user:
+    name: "{{ item.name }}"
+    groups: "{{ item.groups }}"
+    append: true
+    shell: "{{ item.shell | default('/bin/bash') }}"
+    create_home: true
+    state: present
+    # Stable salt derived from username → idempotency. Without an explicit
+    # salt, password_hash() picks a random one each run → different hash →
+    # Ansible reports "changed" and rewrites the password every provision.
+    password: "{{ (item.password | password_hash('sha512', 'benngard.' + item.name)) if item.password is defined else omit }}"
+  loop: "{{ server_users }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Install SSH keys
+  ansible.posix.authorized_key:
+    user: "{{ item.name }}"
+    key: "{{ item.ssh_key }}"
+    state: present
+  loop: "{{ server_users }}"
+  loop_control:
+    label: "{{ item.name }}"

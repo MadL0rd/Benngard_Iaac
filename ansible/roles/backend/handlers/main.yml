@@ -1,0 +1,19 @@
+---
+# Fires when .env or docker-compose.app.yml change. If the container hasn't
+# been deployed yet (first provision before first CI deploy), handler skips
+# — APP_IMAGE is unknown and there's nothing to recreate. After the first
+# deploy the webhook writes the image tag to /opt/benngard-app/.app_image
+# and the handler reads it from there.
+
+- name: Restart benngard-backend
+  ansible.builtin.shell: |
+    set -e
+    if [ ! -f "{{ backend_deploy_dir }}/.app_image" ]; then
+      echo "no .app_image yet — skip restart (deploy via webhook will pick up new config)"
+      exit 0
+    fi
+    APP_IMAGE="$(cat {{ backend_deploy_dir }}/.app_image)" \
+      docker compose -f {{ backend_deploy_dir }}/docker-compose.app.yml up -d
+  become: true
+  become_user: deploy-agent
+  changed_when: true

@@ -1,0 +1,126 @@
+# {{ item.domain }} — managed by Ansible, do not edit manually
+# vhost shape: Grafana at root + deploy-gate under /deploy-gate/.
+{% set whitelist = item.whitelist | default(false) %}
+{% if cert_exists %}
+server {
+    listen 80;
+    server_name {{ item.domain }};
+
+    location /.well-known/acme-challenge/ {
+        root /var/www/html;
+    }
+
+    location / {
+{% if whitelist %}
+{% for ip in nginx_whitelist_ips %}
+        allow {{ ip }};
+{% endfor %}
+        deny all;
+{% endif %}
+        return 301 https://$host$request_uri;
+    }
+}
+
+server {
+    listen 443 ssl;
+    server_name {{ item.domain }};
+
+    ssl_certificate     /etc/letsencrypt/live/{{ item.domain }}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/{{ item.domain }}/privkey.pem;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_ciphers         ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384;
+    ssl_prefer_server_ciphers off;
+    ssl_session_cache   shared:SSL:10m;
+    ssl_session_timeout 1d;
+
+    # Block credential/config scanners and CMS/admin paths.
+    location ~* \.(env|git|svn|htpasswd|htaccess|php|asp|aspx|jsp|cgi|sh|sql|bak|backup)$ { return 444; }
+    location ~* ^/(wp-|phpmyadmin|xmlrpc|cgi-bin|ecp|owa|autodiscover|webmail|cpanel|plesk|whm|webdav) { return 444; }
+
+    # Grafana — root catch-all (websocket upgrade for live tail).
+    location / {
+{% if whitelist %}
+{% for ip in nginx_whitelist_ips %}
+        allow {{ ip }};
+{% endfor %}
+        deny all;
+{% endif %}
+        limit_req zone=app_api burst=100 nodelay;
+
+        proxy_pass         http://127.0.0.1:{{ item.upstream_port }};
+        proxy_http_version 1.1;
+        proxy_set_header   Host              $host;
+        proxy_set_header   X-Real-IP         $remote_addr;
+        proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto $scheme;
+        proxy_set_header   Upgrade           $http_upgrade;
+        proxy_set_header   Connection        "upgrade";
+        proxy_read_timeout 60s;
+    }
+
+    # deploy-gate (Go on 127.0.0.1:9000). All routes live under /deploy-gate/.
+    # nginx strips the prefix via proxy_pass URI rewrite — Go service keeps
+    # internal paths /health, /hooks/*, /tg/callback. Auth varies per route:
+    #   /deploy-gate/health      — public, returns "ok" (blackbox probes)
+    #   /deploy-gate/hooks/<id>  — HMAC SHA256 (GH Actions)
+    #   /deploy-gate/tg/callback — header secret + TG IP allowlist (override below)
+    location /deploy-gate/ {
+        proxy_pass         http://127.0.0.1:9000/;
+        proxy_http_version 1.1;
+        proxy_set_header   Host              $host;
+        proxy_set_header   X-Real-IP         $remote_addr;
+        proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto $scheme;
+        proxy_read_timeout 60s;
+    }
+
+    # TG callback — exact-match wins over the /deploy-gate/ prefix above.
+    # IP allowlist = defence-in-depth, ranges from core.telegram.org/bots/webhooks.
+    location = /deploy-gate/tg/callback {
+        allow 149.154.160.0/20;
+        allow 91.108.4.0/22;
+        deny  all;
+        proxy_pass         http://127.0.0.1:9000/tg/callback;
+        proxy_http_version 1.1;
+        proxy_set_header   Host              $host;
+        proxy_set_header   X-Real-IP         $remote_addr;
+        proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto $scheme;
+        proxy_read_timeout 10s;
+    }
+
+    # nginx stub_status — localhost + docker networks only.
+    location = /nginx_status {
+        stub_status;
+        allow 127.0.0.1;
+        allow 172.16.0.0/12;
+        deny  all;
+    }
+}
+{% else %}
+server {
+    listen 80;
+    server_name {{ item.domain }};
+
+    location /.well-known/acme-challenge/ {
+        root /var/www/html;
+    }
+
+    location / {
+{% if whitelist %}
+{% for ip in nginx_whitelist_ips %}
+        allow {{ ip }};
+{% endfor %}
+        deny all;
+{% endif %}
+        proxy_pass         http://127.0.0.1:{{ item.upstream_port }};
+        proxy_http_version 1.1;
+        proxy_set_header   Host              $host;
+        proxy_set_header   X-Real-IP         $remote_addr;
+        proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto $scheme;
+        proxy_set_header   Upgrade           $http_upgrade;
+        proxy_set_header   Connection        "upgrade";
+    }
+}
+{% endif %}

@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Managed by Ansible — edits get clobbered on next provision.           -->
+<!-- Declarative allowlist for firewalld's public zone. Anything not       -->
+<!-- listed here is closed after `firewalld --reload`.                     -->
+<!--                                                                       -->
+<!-- WG-specific rules (UDP/51820 + <forward/>) are NOT here — the         -->
+<!-- wireguard role adds them via ansible.posix.firewalld at provision-vpn -->
+<!-- time, keeping all WG firewalld state in one place.                    -->
+<zone>
+  <short>Public</short>
+  <service name="ssh"/>
+  <service name="http"/>
+  <service name="https"/>
+</zone>

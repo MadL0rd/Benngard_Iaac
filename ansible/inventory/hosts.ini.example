@@ -1,0 +1,30 @@
+# Inventory shared by bootstrap, provision, and wireguard.
+# Copy to hosts.ini (gitignored) and check the IPs.
+#
+# User/key are set per-playbook (remote_user in each play), not here —
+# bootstrap logs in as rockylinux@22, provision as madlord@22.
+#
+# IPs / DNS / Security Groups — see docs/exoscale-infrastructure.md
+
+[dev_app]
+dev          ansible_host=91.92.141.48
+
+[prod_app]
+prod         ansible_host=91.92.140.173
+
+[metrics_server]
+metrics      ansible_host=91.92.202.162
+
+# vpn_server — single-purpose WireGuard host. Intentionally NOT in
+# all_servers: the main bootstrap/provision cycle skips it (no docker /
+# nginx / certbot needed). Own track: make bootstrap-vpn + make provision-vpn.
+[vpn_server]
+vpn          ansible_host=151.145.202.166
+
+[app_servers:children]
+dev_app
+prod_app
+
+[all_servers:children]
+app_servers
+metrics_server

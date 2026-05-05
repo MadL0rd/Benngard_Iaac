@@ -1,0 +1,63 @@
+name: trivy-scan
+
+# Scans all images in our compose files for HIGH/CRITICAL CVEs that have
+# a fix available. Replaces the legacy trivy-scanner.service on the
+# metrics host. Triggers: weekly cron baseline, PRs touching compose
+# files (so a Dependabot bump shows its CVE delta), and manual dispatch.
+
+on:
+  schedule:
+    - cron: '0 6 * * 1'
+  pull_request:
+    paths:
+      - 'infra/**/docker-compose*.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  collect-images:
+    runs-on: ubuntu-latest
+    outputs:
+      images: ${{ steps.extract.outputs.images }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: extract
+        name: Extract images from compose files
+        run: |
+          images=$(grep -hE '^[[:space:]]+image:[[:space:]]*' infra/*/docker-compose*.yml \
+            | sed -E 's/^[[:space:]]+image:[[:space:]]*//; s/^"//; s/"$//; s/[[:space:]]+$//' \
+            | sort -u \
+            | jq -R -s -c 'split("\n") | map(select(length > 0))')
+          echo "images=$images"
+          echo "images=$images" >> "$GITHUB_OUTPUT"
+
+  scan:
+    needs: collect-images
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ${{ fromJson(needs.collect-images.outputs.images) }}
+    steps:
+      - name: Trivy scan ${{ matrix.image }}
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: ${{ matrix.image }}
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          format: table
+          output: trivy-output.txt
+
+      - name: Append result to job summary
+        if: always()
+        run: |
+          {
+            echo "### \`${{ matrix.image }}\`"
+            echo ''
+            echo '```'
+            cat trivy-output.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,92 @@
+---
+# Variables shared by all servers.
+
+# SSH keys:
+#   initial_ssh_private_key — pre-installed by the VDS provider in
+#     /home/rockylinux/.ssh/authorized_keys; used ONLY by bootstrap.yml.
+#   madlord_ssh_private_key — operator key. Its pub half is placed on the
+#     madlord user by the `users` role during bootstrap; all later provisions
+#     connect as madlord with this key.
+initial_ssh_private_key: "~/.ssh/benngard-default-exoscale"
+madlord_ssh_private_key: "~/.ssh/benngard-madlord-exoscale"
+madlord_ssh_pubkey:      "{{ madlord_ssh_private_key }}.pub"
+
+# deploy-agent — CI deploy user. The same key is used for:
+#   • the metrics → app-server SSH chain (orchestrated by deploy-gate)
+#   • any other CI access to app servers
+# Operator keeps the privkey in ~/.ssh; Ansible also copies it to
+# /etc/benngard-deploy/id_ed25519 on metrics (see deploy_gate role).
+deploy_agent_ssh_private_key: "~/.ssh/benngard-deploy-agent-exoscale"
+deploy_agent_ssh_pubkey:      "{{ deploy_agent_ssh_private_key }}.pub"
+
+# Default for all playbooks; bootstrap.yml overrides to initial_ssh_private_key.
+ansible_ssh_private_key_file: "{{ madlord_ssh_private_key }}"
+
+certbot_email: "Anton.Tekutow@yandex.ru"
+
+# User that owns/runs containers (app + metrics roles).
+deploy_user: madlord
+
+# Service deploy directories on the VDS.
+infra_deploy_dir: /opt/benngard-infra
+metrics_deploy_dir: /opt/metrics-stack
+backend_deploy_dir: /opt/benngard-app
+frontend_deploy_dir: /opt/benngard-frontend
+
+# nginx static_root for the frontend SPA. Deliberately domain-independent —
+# changing the domain doesn't require a redeploy. Same path on dev and prod
+# (one app per server, no collisions).
+frontend_static_dir: /var/www/benngard-frontend
+
+# Container registry — Exoscale. Single namespace, separate repos for
+# backend and frontend. CI builds image refs as
+#   {{ registry_url }}/<repo>:<tag>
+# where <repo> = "benngard-backend" | "benngard-frontend".
+registry_url: "exo.container-registry.com/benngard-family-office-ltd"
+
+app_port: 8000
+otel_collector_http: 4318
+otel_collector_grpc: 4317
+
+# Metrics-server ports (used by otel-collector.yml.j2).
+metrics_vm_port: 8428
+metrics_tempo_otlp_port: 4318   # OTLP HTTP → Tempo
+metrics_tempo_api_port: 3200    # HTTP API → Grafana
+metrics_loki_port: 3100
+metrics_grafana_port: 3000
+
+timezone: "Europe/Berlin"
+
+# Empty defaults, overridden per group.
+server_users: []
+nginx_vhosts: []
+
+# IP whitelist for nginx vhosts with whitelist: true (dev, metrics).
+# prod is public and has whitelist disabled.
+#
+# Real-traffic sources:
+#   - madlord (operator) static IP
+#   - vpn host — all VPN clients arrive as src=vpn-public-IP after
+#     MASQUERADE on the vpn host
+#   - metrics — blackbox-exporter probes /health on dev.benngard.de
+#     (redundant on the metrics vhost itself, but one shared list is
+#     simpler than per-vhost lists)
+nginx_whitelist_ips:
+  - "77.37.160.6"                              # madlord static
+  - "{{ hostvars['vpn'].ansible_host }}"       # vpn (post-MASQUERADE VPN clients)
+  - "{{ hostvars['metrics'].ansible_host }}"   # metrics (blackbox)
+
+# WireGuard VPN — shared constants for server config (vpn host) and client
+# configs (Makefile wg-configs). Server-specific bits (peers, ACL) live in
+# group_vars/vpn_server.yml.
+wireguard_port:   51820
+wireguard_subnet: "10.10.0.0/24"
+
+# Sudo password for become — value comes from encrypted vault.yml.
+ansible_become_password: "{{ vault_madlord_password }}"
+
+# Auto-reboot after weekly dnf-automatic security patches.
+# Default Wed 04:00 for every host (after dev's canary day).
+# dev_app overrides to Tue 04:00 — that's the canary.
+auto_reboot_enabled:    true
+auto_reboot_oncalendar: "Wed 04:00"

@@ -1,0 +1,12 @@
+---
+# Users are identical on dev + prod; env-specific overrides live in
+# group_vars/dev_app.yml and group_vars/prod_app.yml.
+
+server_users:
+  - name: madlord
+    groups: "wheel,docker"
+    ssh_key: "{{ lookup('file', madlord_ssh_pubkey) }}"
+    password: "{{ vault_madlord_password }}"
+  - name: deploy-agent
+    groups: "docker"
+    ssh_key: "{{ lookup('file', deploy_agent_ssh_pubkey) }}"

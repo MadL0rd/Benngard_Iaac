@@ -1,0 +1,11 @@
+---
+# WireGuard VPN — separate playbook, run via `make provision-vpn`.
+# Deploys the VPN server on the dedicated vpn host and fetches its public
+# key locally (wireguard/keys/wg-server.pub) for client config generation.
+
+- name: WireGuard VPN
+  hosts: vpn_server
+  remote_user: madlord
+  become: true
+  roles:
+    - wireguard

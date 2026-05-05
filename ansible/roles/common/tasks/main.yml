@@ -1,0 +1,150 @@
+---
+# No blanket `dnf upgrade` — security patches arrive via dnf-automatic timer
+# (below), without blocking ansible runs.
+
+- name: Install base packages
+  ansible.builtin.dnf:
+    name:
+      - curl
+      - git
+      - tar
+      - rsync
+      - ca-certificates
+      - tzdata
+      - procps-ng                     # sysctl
+      - sudo                          # for the wheel group
+      - python3                       # Ansible modules
+      - policycoreutils-python-utils  # semanage (seport / sefcontext)
+      - dnf-automatic                 # weekly security updates via systemd timer
+      - dnf-utils                     # `needs-restarting` for auto-reboot
+    state: present
+  register: common_dnf_base
+  until: common_dnf_base is succeeded
+  retries: 3
+  delay: 15
+
+# ABI sync — keep these libs at latest on every provision. Problem class:
+# dnf-automatic with upgrade_type=security upgrades one lib (e.g. systemd
+# security patch) but leaves its dep (openssl-libs, not flagged security)
+# stale → ABI mismatch → `systemctl: undefined symbol:
+# EVP_MD_CTX_get_size_ex, version OPENSSL_3.4.0`.
+#
+# Coverage:
+#   glibc + libxcrypt   foundation, everything links against them
+#   openssl / nss       TLS — curl, dnf, sshd, nginx
+#   systemd + libs      init + control plane
+#   libcurl             http client used by dnf, ansible.builtin.uri, scripts
+#   python3-libs        Ansible runtime, dnf-automatic
+#   ca-certificates     root certs for TLS
+#   expat / xz-libs     widely-depended parsing/compression libs
+#
+# Idempotent: no-op if already latest. First run on a fresh VDS pulls ~50MB.
+- name: Sync ABI-sensitive system libraries to latest
+  ansible.builtin.dnf:
+    name:
+      - glibc
+      - glibc-common
+      - libxcrypt
+      - openssl
+      - openssl-libs
+      - nss
+      - nss-util
+      - nss-softokn
+      - systemd
+      - systemd-libs
+      - libcurl
+      - curl
+      - python3
+      - python3-libs
+      - ca-certificates
+      - expat
+      - xz-libs
+    state: latest  # noqa: package-latest
+  register: common_dnf_abi_sync
+  until: common_dnf_abi_sync is succeeded
+  retries: 3
+  delay: 15
+  when: ansible_facts["virtualization_type"] != 'docker'
+
+- name: Configure dnf-automatic (security only, auto-apply, no reboot)
+  # Config is re-read on every timer fire — no service restart needed.
+  # reboot=never leaves the reboot decision to us (matters for kernel patches).
+  ansible.builtin.copy:
+    dest: /etc/dnf/automatic.conf
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      # Managed by Ansible — common role.
+      [commands]
+      upgrade_type            = security
+      random_sleep            = 0
+      network_online_timeout  = 60
+      download_updates        = yes
+      apply_updates           = yes
+      reboot                  = never
+
+      [emitters]
+      emit_via = stdio
+
+      [base]
+      debuglevel = 1
+
+- name: Create /etc/systemd/system/dnf-automatic.timer.d/
+  ansible.builtin.file:
+    path: /etc/systemd/system/dnf-automatic.timer.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Override dnf-automatic.timer schedule (weekly, Tue 03:00)
+  # Package default is daily. We want one fixed weekly window for the
+  # canary pattern to work:
+  #   Tue 03:00  security patches install on ALL hosts
+  #   Tue 04:00  dev reboots (1h install buffer)
+  #   Tue daytime  operator checks dev is healthy. If not, either disable
+  #                auto_reboot_enabled on prod/metrics or fix the package.
+  #   Wed 04:00  prod + metrics reboot (unless operator intervened)
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/dnf-automatic.timer.d/schedule.conf
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      # Managed by Ansible — common role.
+      [Timer]
+      OnCalendar=
+      OnCalendar=Tue 03:00
+      RandomizedDelaySec=0
+
+- name: Enable dnf-automatic.timer (Tue 03:00 — apply security updates)
+  ansible.builtin.systemd:
+    name: dnf-automatic.timer
+    state: started
+    enabled: true
+    daemon_reload: true   # pick up the drop-in above
+  # systemd timers don't work in Docker containers (CI simulation).
+  when: ansible_facts["virtualization_type"] != 'docker'
+
+- name: Auto-reboot after dnf-automatic (schedule from group_vars)
+  ansible.builtin.import_tasks: auto_reboot.yml
+  when:
+    - auto_reboot_enabled | default(false)
+    - ansible_facts["virtualization_type"] != 'docker'
+
+- name: Set timezone
+  community.general.timezone:
+    name: "{{ timezone }}"
+
+- name: Set vm.max_map_count (required by Loki) — persist + apply
+  # Module is idempotent: writes the file only when current sysctl differs
+  # from target. Skip on docker (containers have /proc/sys read-only and
+  # sysctl files are meaningless there — container gets recreated anyway).
+  ansible.posix.sysctl:
+    name: vm.max_map_count
+    value: "262144"
+    state: present
+    sysctl_file: /etc/sysctl.d/99-max-map-count.conf
+    reload: true
+  when: ansible_facts["virtualization_type"] != 'docker'

@@ -1,0 +1,42 @@
+#!/bin/bash
+# Frontend deploy entrypoint — invoked by the webhook over SSH.
+# Runs as deploy-agent.
+#
+# Contract: FRONTEND_IMAGE comes in via the webhook payload.
+# Target dir is the same on dev/prod ({{ frontend_static_dir }}) — the nginx
+# vhost (see roles/nginx) points its root here.
+#
+# {{ ansible_managed }}
+
+set -euo pipefail
+
+: "${FRONTEND_IMAGE:?FRONTEND_IMAGE not set}"
+
+final="{{ frontend_static_dir }}"
+# Stage inside frontend_deploy_dir — owned by deploy-agent, full access.
+# Can't stage under /var/www/: parent is root:root, mkdir would fail.
+staging="{{ frontend_deploy_dir }}/staging"
+
+echo "[$(date -Iseconds)] frontend deploy image=$FRONTEND_IMAGE target=$final"
+
+docker pull "$FRONTEND_IMAGE"
+
+# `docker create` without run — FROM scratch images have no process; the
+# container is needed only to extract dist via docker cp.
+cid=$(docker create "$FRONTEND_IMAGE")
+trap 'docker rm "$cid" >/dev/null 2>&1 || true' EXIT
+
+rm -rf "$staging"
+mkdir -p "$staging"
+docker cp "$cid:/." "$staging/"
+
+# Atomic swap: rsync --delete syncs staging → final. nginx never sees a
+# partial state. `final` is owned by deploy-agent (see roles/nginx/tasks).
+rsync -a --delete "$staging/" "$final/"
+rm -rf "$staging"
+
+# Source of truth for "currently deployed frontend version" is the
+# deploy-gate `event=ok` log line in Loki — see cicd-deploys dashboard
+# version panels for the LogQL query that renders the tag.
+
+echo "[$(date -Iseconds)] deploy ok service=frontend image=$FRONTEND_IMAGE target=$final"

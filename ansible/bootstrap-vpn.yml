@@ -1,0 +1,18 @@
+---
+# First-time setup of the vpn host — separate playbook, intentionally not
+# part of bootstrap.yml. vpn is single-purpose: no docker / nginx / certbot,
+# so it lives outside `all_servers` with its own track.
+#
+# Logs in as rockylinux (cloud-init default); thereafter madlord via
+# provision-vpn.
+
+- name: Bootstrap vpn host — common + users + hardening
+  hosts: vpn_server
+  remote_user: rockylinux
+  become: true
+  vars:
+    ansible_ssh_private_key_file: "{{ initial_ssh_private_key }}"
+  roles:
+    - common
+    - users
+    - hardening

@@ -1,0 +1,17 @@
+---
+deploy_env: "prod"
+otel_deployment_env: "prod"
+
+# Private IP of metrics in the `Benngard` network (10.0.0.0/24).
+# OTel traffic goes over the private interface (ens6) — Exoscale SGs don't
+# apply to private traffic. Source of truth: docs/exoscale-infrastructure.md.
+metrics_host: "10.0.0.138"
+
+nginx_vhosts:
+  - kind: app
+    domain: benngard.de
+    aliases: [www.benngard.de]
+    upstream_port: "{{ app_port }}"
+    # Frontend SPA build is uploaded here by CI. Until the first deploy
+    # completes nginx serves 403 on `/` — `/api/` and `/health` still proxy
+    # to the backend regardless.

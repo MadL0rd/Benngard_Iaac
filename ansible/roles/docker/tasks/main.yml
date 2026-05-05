@@ -1,0 +1,61 @@
+---
+- name: Fetch docker-ce.repo (RHEL 10)
+  ansible.builtin.get_url:
+    url: https://download.docker.com/linux/rhel/docker-ce.repo
+    dest: /etc/yum.repos.d/docker-ce.repo
+    mode: "0644"
+    force: true
+
+- name: Install Docker CE packages
+  ansible.builtin.dnf:
+    name:
+      - docker-ce
+      - docker-ce-cli
+      - containerd.io
+      - docker-compose-plugin
+    state: present
+    install_weak_deps: false
+
+# dockerd needs these netfilter modules for NAT/bridge. On Rocky 10
+# cloud-image they ship in kernel-modules-extra for the running kernel; if
+# the package pulls a newer kernel, a reboot will be required.
+- name: Install kernel-modules-extra
+  ansible.builtin.dnf:
+    name: kernel-modules-extra
+    state: present
+
+- name: Load netfilter modules required by Docker
+  community.general.modprobe:
+    name: "{{ item }}"
+    state: present
+  loop:
+    - xt_addrtype
+    - xt_conntrack
+    - br_netfilter
+    - nf_nat
+    - overlay
+
+- name: Persist module load at boot
+  ansible.builtin.copy:
+    dest: /etc/modules-load.d/docker.conf
+    content: |
+      xt_addrtype
+      xt_conntrack
+      br_netfilter
+      nf_nat
+      overlay
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Start and enable Docker
+  ansible.builtin.systemd:
+    name: docker
+    state: started
+    enabled: true
+
+- name: Add user to docker group
+  ansible.builtin.user:
+    name: "{{ deploy_user }}"
+    groups: docker
+    append: true

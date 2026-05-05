@@ -1,0 +1,60 @@
+---
+# Prod infra stack — managed by Ansible. Identical to dev (only .env
+# differs). app-net is external; see dev/docker-compose.infra.yml for the
+# rationale.
+
+name: benngard-infra
+
+services:
+  otel-collector:
+    image: "otel/opentelemetry-collector-contrib:0.151.0"
+    container_name: otel-collector
+    restart: unless-stopped
+    command: ["--config=/etc/otel/config.yml"]
+    volumes:
+      - ./otel-collector-config.yml:/etc/otel/config.yml:ro
+    # No host port — backend reaches otel-collector:4318 over app-net.
+    networks:
+      - app-net
+
+  nginx-exporter:
+    image: "nginx/nginx-prometheus-exporter:1.5.1"
+    container_name: nginx-exporter
+    restart: unless-stopped
+    command:
+      - --nginx.scrape-uri=http://host.docker.internal/nginx_status
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - app-net
+
+  cadvisor:
+    image: "gcr.io/cadvisor/cadvisor:v0.55.1"
+    container_name: cadvisor
+    restart: unless-stopped
+    privileged: true
+    command:
+      - --docker_only=true
+      - --housekeeping_interval=15s
+      # Do NOT add --containerd/--docker= flags: defaults pick up docker.sock
+      # and emit `name` label as the docker container name. Adding them flips
+      # to containerd-only mode where `name` becomes the container-ID hash,
+      # breaking alert regexes like `name=~"benngard-app|grafana|..."`.
+    devices:
+      - /dev/kmsg
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /run/containerd:/run/containerd:ro
+      - /sys:/sys:ro
+      - /var/lib/docker:/var/lib/docker:ro
+      - /var/lib/containerd:/var/lib/containerd:ro
+      - /etc/machine-id:/etc/machine-id:ro
+      - /dev/disk:/dev/disk:ro
+    networks:
+      - app-net
+
+networks:
+  app-net:
+    external: true
+    name: app-net

@@ -1,0 +1,505 @@
+apiVersion: 1
+
+# Базовый набор алертов. Все правила:
+#   - запросы идут в VictoriaMetrics (uid: victoriametrics)
+#   - threshold-выражение B сравнивает результат A с 0 (любой ненулевой → fire)
+#   - for: подобрано так чтобы переживать обычные compose-рестарты при деплое
+#   - annotations.dashboard_uid — наша custom-аннотация для маппинга rule →
+#     дашборд (используется в Telegram-шаблоне, см. templates.yml).
+#     Не используем зарезервированные __dashboardUid__/__panelId__ — Grafana
+#     требует их парой и обвалит провижн алертинга если задать только одну.
+#
+# Чтобы добавить алерт — скопируй блок rule, поменяй uid/title/expr/labels
+# и проставь dashboard_uid под нужный дашборд. UIDы правил должны быть
+# уникальными внутри org.
+groups:
+  - orgId: 1
+    name: stack-health
+    folder: alerts
+    interval: 1m
+    rules:
+
+      # FastAPI /health не возвращает 200 для 10 подряд проб (probe interval 60s,
+      # for: 10m). Покрывает: контейнер упал, app в hang-state, /health отдаёт 5xx,
+      # nginx сломан, SSL сертификат протух, DNS не резолвится.
+      # 10m — переживает обычные compose-рестарты при деплое без false alert.
+      #
+      # probe_success приходит с лейблом deployment_environment из prometheus.yml
+      # (static_configs.labels) — policy может роутить алерт в нужный TG-тред.
+      - uid: benngard-health-down
+        title: FastAPI /health failing
+        condition: B
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: victoriametrics
+            model:
+              datasource:
+                type: prometheus
+                uid: victoriametrics
+              editorMode: code
+              # `== bool 0` возвращает 1 для упавших проб, 0 для здоровых —
+              # threshold gt 0 в B триггерит только на 1. Без bool это был бы
+              # фильтр (=0 значение), и threshold на 0 не сработал бы.
+              # dev|prod only — deploy-gate covered by cicd-deploy-gate-down.
+              expr: 'probe_success{job="blackbox", deployment_environment=~"dev|prod"} == bool 0'
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - refId: B
+            relativeTimeRange:
+              from: 0
+              to: 0
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator: {params: [0], type: gt}
+                  operator: {type: and}
+                  query: {params: [B]}
+                  reducer: {type: last, params: []}
+                  type: query
+              datasource: {type: __expr__, uid: __expr__}
+              expression: A
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: B
+              type: threshold
+        noDataState: OK
+        execErrState: Error
+        for: 10m
+        annotations:
+          dashboard_uid: benngard-backend-overview
+          summary: /health failing on {{ $labels.deployment_environment }}
+          description: HTTP probe to {{ $labels.instance }} failing for 10+ min.
+        labels:
+          severity: critical
+        isPaused: false
+
+      # Контейнер перезапустился больше 2 раз за 10 минут — рестарт-луп.
+      # Список сервисов покрывает app + metrics стеки.
+      - uid: container-restart-loop
+        title: Container restart loop
+        condition: B
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: victoriametrics
+            model:
+              datasource:
+                type: prometheus
+                uid: victoriametrics
+              editorMode: code
+              expr: 'changes(container_start_time_seconds{name=~"benngard-app|otel-collector|cadvisor|grafana|tempo|loki|victoriametrics|promtail|blackbox-exporter"}[10m]) > 2'
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - refId: B
+            relativeTimeRange:
+              from: 0
+              to: 0
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator: {params: [0], type: gt}
+                  operator: {type: and}
+                  query: {params: [B]}
+                  reducer: {type: last, params: []}
+                  type: query
+              datasource: {type: __expr__, uid: __expr__}
+              expression: A
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: B
+              type: threshold
+        noDataState: OK
+        execErrState: Error
+        for: 0s
+        annotations:
+          dashboard_uid: cadvisor
+          summary: Container {{ $labels.name }} restart loop ({{ $labels.deployment_environment }})
+          description: 3+ restarts in 10 min.
+        labels:
+          severity: warning
+        isPaused: false
+
+      # Диск > 85% на корневом разделе. id="/" — корневой cgroup (хост целиком).
+      - uid: disk-usage-high
+        title: Disk usage high
+        condition: B
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: victoriametrics
+            model:
+              datasource:
+                type: prometheus
+                uid: victoriametrics
+              editorMode: code
+              expr: '(container_fs_usage_bytes{id="/", device=~"/dev/(vd|sd|nvme|xvd|hd)[a-z0-9]+"} / container_fs_limit_bytes{id="/", device=~"/dev/(vd|sd|nvme|xvd|hd)[a-z0-9]+"}) * 100 > 85'
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - refId: B
+            relativeTimeRange:
+              from: 0
+              to: 0
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator: {params: [0], type: gt}
+                  operator: {type: and}
+                  query: {params: [B]}
+                  reducer: {type: last, params: []}
+                  type: query
+              datasource: {type: __expr__, uid: __expr__}
+              expression: A
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: B
+              type: threshold
+        noDataState: OK
+        execErrState: Error
+        for: 5m
+        annotations:
+          dashboard_uid: cadvisor
+          summary: Disk > 85% on {{ $labels.deployment_environment }}
+        labels:
+          severity: warning
+        isPaused: false
+
+      # RAM используется >90% устойчиво 10 минут.
+      - uid: memory-high
+        title: Memory usage high
+        condition: B
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: victoriametrics
+            model:
+              datasource:
+                type: prometheus
+                uid: victoriametrics
+              editorMode: code
+              expr: '(sum by (deployment_environment) (container_memory_usage_bytes{id="/"}) / sum by (deployment_environment) (machine_memory_bytes)) * 100 > 90'
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - refId: B
+            relativeTimeRange:
+              from: 0
+              to: 0
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator: {params: [0], type: gt}
+                  operator: {type: and}
+                  query: {params: [B]}
+                  reducer: {type: last, params: []}
+                  type: query
+              datasource: {type: __expr__, uid: __expr__}
+              expression: A
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: B
+              type: threshold
+        noDataState: OK
+        execErrState: Error
+        for: 10m
+        annotations:
+          dashboard_uid: cadvisor
+          summary: RAM > 90% on {{ $labels.deployment_environment }}
+        labels:
+          severity: warning
+        isPaused: false
+
+      # CPU занят >90% устойчиво 15 минут.
+      - uid: cpu-high
+        title: CPU usage high
+        condition: B
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 900
+              to: 0
+            datasourceUid: victoriametrics
+            model:
+              datasource:
+                type: prometheus
+                uid: victoriametrics
+              editorMode: code
+              expr: '(sum by (deployment_environment) (rate(container_cpu_usage_seconds_total{id="/", cpu="total"}[5m])) / sum by (deployment_environment) (machine_cpu_cores)) * 100 > 90'
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - refId: B
+            relativeTimeRange:
+              from: 0
+              to: 0
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator: {params: [0], type: gt}
+                  operator: {type: and}
+                  query: {params: [B]}
+                  reducer: {type: last, params: []}
+                  type: query
+              datasource: {type: __expr__, uid: __expr__}
+              expression: A
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: B
+              type: threshold
+        noDataState: OK
+        execErrState: Error
+        for: 15m
+        annotations:
+          dashboard_uid: cadvisor
+          summary: CPU > 90% on {{ $labels.deployment_environment }}
+        labels:
+          severity: warning
+        isPaused: false
+
+      # Scrape таргет недоступен (cAdvisor / blackbox / nginx-exporter).
+      # `up` — синтетическая метрика prometheus/otelcol-collector: 1 при
+      # успешном scrape, 0 при ошибке. Если 0 устойчиво 5+ минут — таргет
+      # либо мёртв, либо недостижим. Лейбл deployment_environment приходит
+      # из самой метрики → видно где упало (metrics / dev / prod).
+      - uid: scrape-target-down
+        title: Scrape target down
+        condition: B
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: victoriametrics
+            model:
+              datasource:
+                type: prometheus
+                uid: victoriametrics
+              editorMode: code
+              expr: 'up{job=~"cadvisor|blackbox"} == 0'
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - refId: B
+            relativeTimeRange:
+              from: 0
+              to: 0
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator: {params: [0], type: gt}
+                  operator: {type: and}
+                  query: {params: [B]}
+                  reducer: {type: last, params: []}
+                  type: query
+              datasource: {type: __expr__, uid: __expr__}
+              expression: A
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: B
+              type: threshold
+        noDataState: OK
+        execErrState: Error
+        for: 5m
+        annotations:
+          dashboard_uid: cadvisor
+          summary: '{{ $labels.job }} scrape down on {{ $labels.deployment_environment }}'
+        labels:
+          severity: warning
+        isPaused: false
+
+      # Полная остановка телеметрии с app-сервера. up{job="cadvisor"} серия
+      # вообще пропадает — это значит что либо OTel-collector на dev/prod
+      # умер (не scrape'ит cAdvisor), либо приватная сеть отвалилась
+      # (не доходит до VM на metrics). В обоих случаях мы ослепли по этому
+      # серверу: метрики/трейсы/логи не приходят. Это критично для prod.
+      #
+      # Иной случай чем `scrape-target-down` (там up == 0): тут up серии
+      # просто НЕТ — некому её даже пушить.
+      - uid: telemetry-pipeline-stopped
+        title: Telemetry pipeline stopped — OTel-collector down or private net broken
+        condition: B
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: victoriametrics
+            model:
+              datasource:
+                type: prometheus
+                uid: victoriametrics
+              editorMode: code
+              expr: |
+                absent_over_time(up{job="cadvisor", deployment_environment="dev"}[10m]) or
+                absent_over_time(up{job="cadvisor", deployment_environment="prod"}[10m])
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - refId: B
+            relativeTimeRange:
+              from: 0
+              to: 0
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator: {params: [0], type: gt}
+                  operator: {type: and}
+                  query: {params: [B]}
+                  reducer: {type: last, params: []}
+                  type: query
+              datasource: {type: __expr__, uid: __expr__}
+              expression: A
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: B
+              type: threshold
+        noDataState: OK
+        execErrState: Error
+        for: 0s             # 5-min window уже в expression
+        annotations:
+          dashboard_uid: cadvisor
+          summary: No telemetry from {{ $labels.deployment_environment }} for 10+ min
+        labels:
+          severity: critical
+        isPaused: false
+
+      # CI/CD: deploy-gate сам лежит (HTTP /health не отвечает).
+      # Blackbox-exporter раз в 60с пингует
+      # https://metrics.benngard.de/deploy-gate/health
+      # (nginx → 127.0.0.1:9000 → deploy-gate). probe_success=1 когда жив,
+      # 0 когда нет (5xx, timeout, TLS, или service-down). Срабатывает за
+      # ~2 минуты — в отличие от Loki-алертов которые требовали свежих
+      # FAILED-логов, этот ловит даже "процесс упал, ничего не пишет".
+      #
+      # Алерты на сами FAILED/invalid деплои больше не нужны: deploy-gate
+      # шлёт уведомления в TG сам (edit pending-сообщения для FAILED,
+      # отдельное notifyInvalid для invalid). См. handlers.go.
+      - uid: cicd-deploy-gate-down
+        title: deploy-gate is down
+        condition: B
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: victoriametrics
+            model:
+              datasource: {type: prometheus, uid: victoriametrics}
+              editorMode: code
+              # Same `== bool 0` pattern as benngard-health-down — returns 1
+              # on probe failure, 0 on success. Threshold gt 0 → fires on 1.
+              expr: 'probe_success{instance="https://metrics.benngard.de/deploy-gate/health"} == bool 0'
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - refId: B
+            relativeTimeRange:
+              from: 0
+              to: 0
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator: {params: [0], type: gt}
+                  operator: {type: and}
+                  query: {params: [B]}
+                  reducer: {type: last, params: []}
+                  type: query
+              datasource: {type: __expr__, uid: __expr__}
+              expression: A
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: B
+              type: threshold
+        # No data here = blackbox itself not scraping — covered by
+        # scrape-target-down + critical-container-missing.
+        noDataState: OK
+        execErrState: Error
+        for: 2m
+        annotations:
+          dashboard_uid: cicd-deploys
+          summary: 'deploy-gate is not responding'
+          description: CI/CD deploys won't pass.
+        labels:
+          severity: critical
+          deployment_environment: metrics
+        isPaused: false
+
+      # Critical-контейнер метрик-стека пропал. Catch-all для случая когда
+      # docker compose down или OOM убил один из core-сервисов наблюдаемости.
+      # Каждый отсутствующий контейнер генерит свой alert instance с лейблом
+      # name → в Telegram явно видно кого нет.
+      - uid: critical-container-missing
+        title: Critical metrics-stack container missing
+        condition: B
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: victoriametrics
+            model:
+              datasource:
+                type: prometheus
+                uid: victoriametrics
+              editorMode: code
+              # deployment_environment="metrics" в селекторе — нужен чтобы
+              # синтетическая series от absent_over_time несла этот label,
+              # иначе алерт уходит в default-receiver Telegram-prod вместо
+              # Telegram-metrics.
+              expr: |
+                absent_over_time(container_last_seen{name="victoriametrics", deployment_environment="metrics"}[10m]) or
+                absent_over_time(container_last_seen{name="tempo", deployment_environment="metrics"}[10m]) or
+                absent_over_time(container_last_seen{name="loki", deployment_environment="metrics"}[10m]) or
+                absent_over_time(container_last_seen{name="grafana", deployment_environment="metrics"}[10m]) or
+                absent_over_time(container_last_seen{name="promtail", deployment_environment="metrics"}[10m]) or
+                absent_over_time(container_last_seen{name="blackbox-exporter", deployment_environment="metrics"}[10m])
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - refId: B
+            relativeTimeRange:
+              from: 0
+              to: 0
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator: {params: [0], type: gt}
+                  operator: {type: and}
+                  query: {params: [B]}
+                  reducer: {type: last, params: []}
+                  type: query
+              datasource: {type: __expr__, uid: __expr__}
+              expression: A
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: B
+              type: threshold
+        noDataState: OK
+        execErrState: Error
+        for: 0s
+        annotations:
+          dashboard_uid: cadvisor
+          summary: '{{ $labels.name }} container gone for 10+ min'
+        labels:
+          severity: critical
+        isPaused: false

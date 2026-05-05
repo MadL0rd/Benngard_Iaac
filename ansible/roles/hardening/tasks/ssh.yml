@@ -1,0 +1,25 @@
+---
+# SSH hardening — drop-in /etc/ssh/sshd_config.d/00-benngard-hardening.conf:
+#   PermitRootLogin no        — no root login over SSH
+#   PasswordAuthentication no — key-based auth only
+#
+# Drop-in (not lineinfile on main sshd_config) because modern sshd on
+# RHEL-family loads /etc/ssh/sshd_config.d/*.conf BEFORE the main config and
+# uses first-match for once-only directives. The 00- prefix guarantees our
+# drop-in wins even if cloud-init dropped one of its own.
+
+- name: Install SSH hardening drop-in
+  ansible.builtin.copy:
+    dest: /etc/ssh/sshd_config.d/00-benngard-hardening.conf
+    owner: root
+    group: root
+    mode: "0600"
+    content: |
+      # Managed by Ansible — hardening role.
+      PermitRootLogin no
+      PasswordAuthentication no
+  notify: Restart sshd
+
+- name: Validate sshd config (including Include drop-ins)
+  ansible.builtin.command: sshd -t
+  changed_when: false

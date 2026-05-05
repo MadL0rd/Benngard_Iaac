@@ -1,0 +1,18 @@
+---
+# Restart Grafana when startup-affecting configs change: datasources,
+# .env (admin password), docker-compose.yml. JSON dashboards are picked
+# up live by the provisioning watcher (30s) and do NOT trigger a restart.
+- name: Restart grafana
+  ansible.builtin.command: docker restart grafana
+  become: true
+  become_user: "{{ deploy_user }}"
+
+# Hot-reload promscrape config (new scrape targets, label rules, etc.)
+# without restarting victoria-metrics. Zero downtime: existing scrapes
+# continue, ingestion + queries unaffected. On malformed config VM
+# keeps the previous targets. SIGHUP via docker — avoids depending on
+# VM's host port binding (it's on the private IP, not loopback).
+- name: Reload victoriametrics promscrape
+  ansible.builtin.command: docker kill --signal=SIGHUP victoriametrics
+  become: true
+  become_user: "{{ deploy_user }}"

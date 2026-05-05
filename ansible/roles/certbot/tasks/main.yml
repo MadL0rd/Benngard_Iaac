@@ -1,0 +1,65 @@
+---
+# certbot lives in EPEL, not the RHEL-family base repos.
+- name: Enable EPEL repository
+  ansible.builtin.dnf:
+    name: epel-release
+    state: present
+
+- name: Install certbot + python3-certbot-nginx
+  ansible.builtin.dnf:
+    name:
+      - certbot
+      - python3-certbot-nginx
+    state: present
+
+- name: Create renewal deploy-hooks directory
+  ansible.builtin.file:
+    path: /etc/letsencrypt/renewal-hooks/deploy
+    state: directory
+    mode: "0755"
+
+# Deploy hook: certbot runs this after every successful renewal. Reloads
+# nginx so it picks up the new cert.
+- name: Install renewal deploy hook (nginx reload)
+  ansible.builtin.copy:
+    dest: /etc/letsencrypt/renewal-hooks/deploy/reload-nginx.sh
+    mode: "0755"
+    content: |
+      #!/bin/bash
+      systemctl reload nginx
+
+# Issue cert via webroot — nginx already listens on 80 and serves
+# /.well-known/acme-challenge/ from /var/www/html.
+# `creates:` makes this idempotent: existing cert → no-op.
+#
+# If a vhost has aliases (e.g. www.benngard.de alongside benngard.de), each
+# alias is added as a SAN via an extra `-d`. The cert lives at
+# live/<primary domain>/ and covers all names.
+- name: Issue Let's Encrypt certificate
+  ansible.builtin.command: >
+    certbot certonly
+    --webroot
+    --webroot-path /var/www/html
+    --email {{ certbot_email }}
+    --agree-tos
+    --non-interactive
+    -d {{ item.domain }}
+    {% for alias in item.aliases | default([]) %} -d {{ alias }}{% endfor %}
+  args:
+    creates: "/etc/letsencrypt/live/{{ item.domain }}/fullchain.pem"
+  loop: "{{ nginx_vhosts }}"
+  loop_control:
+    label: "{{ item.domain }}"
+  register: certbot_result
+
+# include_role isn't available inside handlers — call inline instead.
+- name: Regenerate nginx configs after new certificate  # noqa: no-handler
+  ansible.builtin.include_role:
+    name: nginx
+  when: certbot_result.changed | default(false)
+
+- name: Enable certbot renewal timer
+  ansible.builtin.systemd:
+    name: certbot-renew.timer
+    state: started
+    enabled: true
