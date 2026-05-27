@@ -58,7 +58,7 @@ services:
   # Ships host journald into Loki so systemd unit logs (auto-reboot,
   # dnf-automatic, sshd, nginx, ...) are visible in Grafana.
   promtail:
-    image: "grafana/promtail:3.6.10"
+    image: "grafana/promtail:3.6.11"
     container_name: promtail
     restart: unless-stopped
     command: ["-config.file=/etc/promtail/promtail.yml"]
