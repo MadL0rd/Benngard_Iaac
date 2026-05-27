@@ -22,7 +22,7 @@ jobs:
     outputs:
       images: ${{ steps.extract.outputs.images }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - id: extract
         name: Extract images from compose files
