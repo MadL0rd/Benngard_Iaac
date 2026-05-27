@@ -11,7 +11,7 @@ name: benngard-infra
 
 services:
   otel-collector:
-    image: "otel/opentelemetry-collector-contrib:0.151.0"
+    image: "otel/opentelemetry-collector-contrib:0.153.0"
     container_name: otel-collector
     restart: unless-stopped
     command: ["--config=/etc/otel/config.yml"]
